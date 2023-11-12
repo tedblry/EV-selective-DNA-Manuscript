@@ -7,6 +7,6 @@ Scripts and analyses used in the study titled "Analysis of Selective DNA in Extr
 This study provides a comprehensive analysis of selective DNA in extracellular vesicles (EVs), aiming to deepen our understanding of their role in cellular communication and its mechanisms. By employing advanced bioinformatics approaches and genomic data analysis, we identify and characterize key genomic features in EVs compared to its donor bacteria. Our findings reveal distinct patterns in COG categories and PFAMs, offering new insights into the genomic architecture of EVs and their potential implications in various biological significance.
 
 ## **Workflow**
-![EV manuscript flowchart](./assets/EV_manuscript_flowchart.png)
+![EV manuscript flowchart](assets/EV manuscript flowchart.png)
 
 This Rmd file is used to answer the highlighted (in yellow) part of the study workflow.
