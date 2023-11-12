@@ -1,0 +1,2730 @@
+---
+title: "EV-selective-DNA-Manuscript"
+author: "Byeongyeon (Terry) Cho"
+output: html_document
+date: "2023-09-27"
+---
+
+```{r setup, include=FALSE}
+# Define the list of required packages
+required_packages <- c(
+  "tidyverse", "rtracklayer", "edgeR", "limma", "DESeq2", "tibble",
+  "EnhancedVolcano", "egg", "gridExtra", "Cairo", "ggrepel", "stringr",
+  "VennDiagram", "UpSetR", "ComplexUpset", "pheatmap", "car", "grid", "stats", "stats4"
+)
+
+# Install packages if they are not already installed
+new_packages <- required_packages[!(required_packages %in% installed.packages()[, "Package"])]
+if (length(new_packages) > 0) {
+  install.packages(new_packages, dependencies = TRUE)
+}
+
+# Load the necessary libraries
+# The tidyverse package will load ggplot2, dplyr, tidyr, readr, purrr, and tibble
+library(tidyverse)
+library(rtracklayer)
+library(edgeR)
+library(limma)
+library(DESeq2)
+library(EnhancedVolcano)
+library(egg)             # For theme_article
+library(gridExtra)       # For arranging multiple plots
+library(Cairo)           # For high quality graphics output
+library(ggrepel)         # For repelling overlapping text labels
+library(stringr)         # For string operations
+library(VennDiagram)     # For creating Venn diagrams
+library(UpSetR)          # For creating UpSet plots
+library(ComplexUpset)    # For more complex UpSet plots
+library(pheatmap)        # For creating heatmaps
+library(car)             # For Companion to Applied Regression functions
+library(stats)           # For statistical functions
+library(stats4)          # For statistical functions using S4 classes
+library(DT)              # For html style table viewing
+
+# Confirm the loading of required packages
+cat("All required packages are installed and loaded.\n")
+```
+
+```{r}
+# List all loaded packages
+loaded_packages <- names(sessionInfo()$otherPkgs)
+
+# Check for 'rename' function in each package
+sapply(loaded_packages, function(pkg) {
+  "rename" %in% ls(getNamespace(pkg))
+})
+```
+
+```{r Define file paths}
+# define filepaths to mapped counts files for all EV and simulated donor reads
+sorted_p1_count_path      <- "./input_files/MappCountFlow/output/p1_sort_counts.txt"
+sorted_p1_sim1_count_path <- "./input_files/MappCountFlow/output/p1_sim1_sort_counts.txt"
+sorted_p1_sim2_count_path <- "./input_files/MappCountFlow/output/p1_sim2_sort_counts.txt"
+sorted_p1_sim3_count_path <- "./input_files/MappCountFlow/output/p1_sim3_sort_counts.txt"
+sorted_wt_count_path      <- "./input_files/MappCountFlow/output/wt_sort_counts.txt"
+sorted_wt_sim1_count_path <- "./input_files/MappCountFlow/output/wt_sim1_sort_counts.txt"
+sorted_wt_sim2_count_path <- "./input_files/MappCountFlow/output/wt_sim2_sort_counts.txt"
+sorted_wt_sim3_count_path <- "./input_files/MappCountFlow/output/wt_sim3_sort_counts.txt"
+
+# define filepath to gff3 file from re-annotated reference genome
+reannotated_gff_path <-"./input_files/Reannotated_ASF/ref_06.gff"
+
+# define filepath to functional annotation file from eggnog mapper (.annotations file)
+emapper_path <- "./input_files/Reannotated_ASF/genome_annotation.emapper.annotations"
+
+# define filepath to metadata for study design
+metadata_path <- "./input_files/EV_metadata.csv"
+  # Should be a .csv file with that looks like the following:
+      # +----------+------------+-------+
+      # |    id    | simulation | group |
+      # +----------+------------+-------+
+      # |    p1    |    exp     |   p1  |
+      # | p1_sim1  |    sim     |   p1  |
+      # | p1_sim2  |    sim     |   p1  |
+      # | p1_sim3  |    sim     |   p1  |
+      # |    p2    |    exp     |   p2  | # present for benchmarking (poor quality data)
+      # | p2_sim1  |    sim     |   p2  | # present for benchmarking (poor quality data)
+      # | p2_sim2  |    sim     |   p2  | # present for benchmarking (poor quality data)
+      # | p2_sim3  |    sim     |   p2  | # present for benchmarking (poor quality data)
+      # |    wt    |    exp     |   wt  |
+      # | wt_sim1  |    sim     |   wt  |
+      # | wt_sim2  |    sim     |   wt  |
+      # | wt_sim3  |    sim     |   wt  |
+      # +----------+------------+-------+
+
+# define filepath to list_of_operons file from operon mapper
+mapped_operon_path <- "./input_files/operon_mapper_reannotated_gtf/1779193/list_of_operons_1779193"
+```
+
+```{r Loading Mapped Counts Files}
+# combining the three count data frames into a single data frame, and assigns column names
+raw_sorted_counts_df <- cbind((read.table(sorted_p1_count_path, header = FALSE, sep = "\t", stringsAsFactors = FALSE))$V1, # only for row names
+                      
+                    (read.table(sorted_p1_count_path, header = FALSE, sep = "\t", stringsAsFactors = FALSE))$V2, # p1
+                    
+                    (read.table(sorted_p1_sim1_count_path, header = FALSE, sep = "\t", stringsAsFactors = FALSE))$V2, 
+                    (read.table(sorted_p1_sim2_count_path, header = FALSE, sep = "\t", stringsAsFactors = FALSE))$V2,
+                    (read.table(sorted_p1_sim3_count_path, header = FALSE, sep = "\t", stringsAsFactors = FALSE))$V2,
+                    
+                    (read.table(sorted_wt_count_path, header = FALSE, sep = "\t", stringsAsFactors = FALSE))$V2, # wt
+                    
+                    (read.table(sorted_wt_sim1_count_path, header = FALSE, sep = "\t", stringsAsFactors = FALSE))$V2, 
+                    (read.table(sorted_wt_sim2_count_path, header = FALSE, sep = "\t", stringsAsFactors = FALSE))$V2,
+                    (read.table(sorted_wt_sim3_count_path, header = FALSE, sep = "\t", stringsAsFactors = FALSE))$V2
+                    )
+
+colnames(raw_sorted_counts_df) <- c("locus_tag", 
+                          "p1",
+                          "p1_sim1","p1_sim2","p1_sim3",
+                          "wt",
+                          "wt_sim1","wt_sim2","wt_sim3")
+
+# Preprocessing raw counts data frame
+raw_counts_df_no_annotation <- raw_sorted_counts_df %>%
+  as.data.frame() %>%
+  remove_rownames() %>% 
+  mutate_at(vars(2:9), as.integer) %>%
+  mutate(locus_tag = str_replace(locus_tag, "locus_tag-", "")) %>% 
+  column_to_rownames(var="locus_tag")
+
+# Filter out rows with zero counts across all samples
+non_empty_locus_tags <- rowSums(raw_counts_df_no_annotation) >= 1
+filtered_raw_counts_df_no_annotation <- raw_counts_df_no_annotation[non_empty_locus_tags,]
+cat("Changes from raw counts to filtered counts: ", nrow(raw_counts_df_no_annotation), "genes to ", nrow(filtered_raw_counts_df_no_annotation), "; ",(nrow(raw_counts_df_no_annotation) - nrow(filtered_raw_counts_df_no_annotation)) , "zero-count genes filtered", "\n")
+
+# Read and process annotation metadata from GFF file
+annotation_metadata <- readGFF(reannotated_gff_path) %>%
+  as.data.frame() %>%
+  select(locus_tag, type, start, end, strand, product) %>%
+  mutate(gene_length = end - start)  # Inclusive of both start and end positions
+
+# We joined counts and annotation from gff3 file from the ASF519 reference genome
+  # 5391 - 5,387 = 4 locus_tags removed (incomplete annotation locus_tags)
+# Join counts with annotation metadata
+annotated_counts_df <- filtered_raw_counts_df_no_annotation %>%
+  rownames_to_column("locus_tag") %>%
+  inner_join(annotation_metadata, by = "locus_tag")
+cat("Changes from filtered counts to annotated counts: ", nrow(filtered_raw_counts_df_no_annotation), "genes to ", nrow(annotated_counts_df), "; ",nrow(filtered_raw_counts_df_no_annotation) - nrow(annotated_counts_df) , " genes filtered from incomplete annotation", "\n")
+
+# Separate annotation and count data into two data frames
+annotation_df <- annotated_counts_df %>%
+  select(locus_tag, start, end, gene_length, strand, product)
+
+raw_counts_df <- annotated_counts_df %>%
+  select(locus_tag, starts_with("p1"), starts_with("wt"))
+
+raw_counts_mat <- raw_counts_df %>%
+  column_to_rownames(var = "locus_tag") %>%
+  as.matrix()  # Convert to matrix for downstream analysis
+
+# Optionally, display the tables using DT for interactive exploration in R Shiny or R Markdown
+# DT::datatable(annotation_df, rownames = FALSE, options = list(pageLength = 5))
+# DT::datatable(raw_counts_df, rownames = FALSE, options = list(pageLength = 5))
+
+# Output: Return a list containing the processed data frames/matrices
+# list(
+#   annotation_df = annotation_df,
+#   raw_counts_df = raw_counts_df
+# )
+```
+
+```{r Loading Gene Annotation}
+# Define a function to read eggNOG annotations with proper formatting and handling
+read_eggnog_annotations <- function(filepath) {
+  # Define column names for the eggNOG annotation file
+  col_names <- c("query", "seed_ortholog", "evalue", "score", "eggNOG_OGs", 
+                 "max_annot_lvl", "COG_category", "Description", "Preferred_name", 
+                 "GOs", "EC", "KEGG_ko", "KEGG_Pathway", "KEGG_Module", "KEGG_Reaction", 
+                 "KEGG_rclass", "BRITE", "KEGG_TC", "CAZy", "BiGG_Reaction", "PFAMs")
+  
+  # Define the expected column types
+  col_types <- cols(
+    query = col_character(),
+    seed_ortholog = col_character(),
+    evalue = col_double(),
+    score = col_double(),
+    eggNOG_OGs = col_character(),
+    max_annot_lvl = col_character(),
+    COG_category = col_character(),
+    Description = col_character(),
+    Preferred_name = col_character(),
+    GOs = col_character(),
+    EC = col_character(),
+    KEGG_ko = col_character(),
+    KEGG_Pathway = col_character(),
+    KEGG_Module = col_character(),
+    KEGG_Reaction = col_character(),
+    KEGG_rclass = col_character(),
+    BRITE = col_character(),
+    KEGG_TC = col_character(),
+    CAZy = col_character(),
+    BiGG_Reaction = col_character(),
+    PFAMs = col_character()
+  )
+  
+  # Read the file using read_tsv and explicitly set column types
+  annotations <- read_tsv(filepath, skip = 5, col_names = col_names, col_types = col_types) %>%
+    filter(!str_starts(query, "##")) %>%
+    mutate(across(where(is.character), ~na_if(., "-"))) %>%
+    mutate(across(where(is.character), ~na_if(., "")))
+  
+  return(annotations)
+}
+
+# Read eggNOG annotations using the defined function
+eggnog_annotations <- read_eggnog_annotations(emapper_path)
+
+# Count the number of NA values for each column
+na_count <- eggnog_annotations %>%
+  summarise(across(everything(), ~sum(is.na(.)), .names = "na_count_{.col}"))
+
+# Subset the eggNOG annotations to relevant columns
+eggnog_meta_subset <- eggnog_annotations %>%
+  select(query, seed_ortholog, evalue, score, eggNOG_OGs, max_annot_lvl, COG_category, Description, Preferred_name, PFAMs) %>%
+    dplyr::rename(locus_tag = query)
+
+# Join the counts with annotation data and the eggNOG metadata
+annotation_df <- annotated_counts_df %>%
+  select(locus_tag, start, end, gene_length, strand, product) %>%
+  left_join(eggnog_meta_subset, by = "locus_tag")
+
+# Optionally, display the tables using DT for interactive exploration
+# DT::datatable(eggnog_annotations, options = list(pageLength = 5), rownames = FALSE)
+# DT::datatable(eggnog_meta_subset, options = list(pageLength = 5), rownames = FALSE)
+# DT::datatable(full_metadata, options = list(pageLength = 5), rownames = FALSE)
+
+# Optionally, display the tables using DT for interactive exploration in R Shiny or R Markdown
+# DT::datatable(annotation_df, rownames = FALSE, options = list(pageLength = 5))
+```
+
+```{r Loading Metadata for study design}
+# Read metadata, ensuring that the 'id' column is set as row names
+tryCatch({
+  meta_df <- read.csv(metadata_path, row.names = 1)
+}, error = function(e) {
+  stop("Error reading metadata file: ", e$message)
+})
+
+# Remove unwanted rows by index - Rows 5, 6, 7, and 8 are removed
+# It is assumed that there is a clear reason these specific rows are removed
+meta_df <- meta_df[-c(5, 6, 7, 8), ]
+
+# Convert character variables to factors for all columns where it is applicable
+meta_df[] <- lapply(meta_df, function(col) if(is.character(col)) as.factor(col) else col)
+
+# Assuming 'raw_counts_mat' is already defined in your environment
+# Check that sample names match between metadata and counts data
+# It's important for downstream analysis that these names match exactly
+if (!all(colnames(raw_counts_mat) %in% rownames(meta_df))) {
+  stop("Not all sample names from counts data are present in metadata.")
+}
+
+if (!all(colnames(raw_counts_mat) == rownames(meta_df))) {
+  warning("Sample names in counts data and metadata do not match in order.")
+  # Optional: Reorder the rows of meta_df to match the order of raw_counts_mat columns
+  meta_df <- meta_df[match(colnames(raw_counts_mat), rownames(meta_df)), ]
+}
+
+# Return or proceed with the cleaned and checked metadata frame
+meta_df
+```
+
+```{r Preprocessing for DA analysis}
+# Define the groups for the analysis
+group <- as.factor(c("exp",rep("sim", 3),"exp", rep("sim", 3)))
+
+# Calculate Reads Per Kilobase (RPK)
+rpk <- ( (raw_counts_mat * 10^3) / annotation_df$gene_length)
+
+# Create a DGEList object
+dge_obj_rpk <- edgeR::DGEList(counts = rpk, 
+                            lib.size = colSums(rpk), 
+                            samples = dplyr::select(meta_df,-group),
+                            group = group,
+                            locus_tags = annotation_df, 
+                            remove.zeros = TRUE)
+
+# Keep a copy of the original DGEList object before filtering
+dge_obj_rpk_unfilt <- dge_obj_rpk
+
+# Pre-filtering: Keep genes with at least 100 counts (that is 100 RPKM) in at least 4 samples
+# This threshold is chosen to ensure a reasonable abundance level across samples
+keep <- rowSums(cpm(dge_obj_rpk) > 100) >= 4
+dge_obj_rpk <- dge_obj_rpk[keep, ]
+
+# Report the number of genes retained after pre-filtering
+cat("Number of locus_tags removed: ", nrow(rpk) - sum(rowSums(cpm(dge_obj_rpk) > 100) >= 4), "\n")
+cat("Number of genes retained after pre-filtering: ", sum(keep), "\n")
+
+# Normalize using TMM
+dge_obj_tmm_rpk <- dge_obj_rpk %>% 
+  calcNormFactors(method="TMM", doWeighting=TRUE)
+
+dge_obj_tmm_rpk_unfilt <- dge_obj_rpk_unfilt %>% 
+  calcNormFactors(method="TMM", doWeighting=TRUE)
+
+# Convert normalized counts to GeTMM (for DESeq2)
+getmm <- cpm(dge_obj_tmm_rpk, normalized.lib.sizes = TRUE)
+getmm_unfilt <- cpm(dge_obj_tmm_rpk_unfilt, normalized.lib.sizes = TRUE)
+
+# Convert normalized counts to log2 CPM values (for Limma)
+log2getmm <- cpm(dge_obj_tmm_rpk, log=TRUE, prior.count=1, normalized.lib.sizes = TRUE)
+log2getmm_unfilt <- cpm(dge_obj_tmm_rpk_unfilt, log=TRUE, prior.count=1, normalized.lib.sizes = TRUE)
+
+# Create data frames from the normalized log2 GeTMM and GeTMM matrices
+log2getmm_df <- as.data.frame(log2getmm) %>%
+  rownames_to_column(var = "Gene")
+
+# Convert the data frame to a long format for visualization or further analysis]
+log2getmm_long_df <- log2getmm_df %>% 
+                 gather(Sample, Value, -Gene) %>%
+                 mutate(Type = ifelse(Sample %in% c("p1", "p2", "wt"), "Empirical", "Simulated"))
+
+```
+
+```{r normalization visualization}
+# Define a color scheme for the samples
+color_scheme <- c(
+  "#8B005B", # "P1"
+  "#DD0089", # "P1_sim1"
+  "#FF20AD", # "P1_sim2"
+  "#FF80E0", # "P1_sim3"
+  
+  "#007D75", # "WT"
+  "#00BBBB", # "WT_sim1"
+  "#00E4E4", # "WT_sim2"
+  "#66FFFF"  # "WT_sim3"
+)
+
+# Function to determine line types based on the sample name
+determine_linetype <- function(Sample) {
+  if (grepl("_sim", Sample)) {
+    return("dashed")
+  } else {
+    return("solid")
+  }
+}
+# Apply the linetype function to the unique samples in the dataframe
+linetypes <- sapply(unique(log2getmm_long_df$Sample), determine_linetype)
+
+# Plot settings
+box_title_size <- 6
+
+# Create a violin plot with corresponding boxplot and jitter
+violin_plot <- ggplot(log2getmm_long_df, aes(x = Sample, y = Value, color = Sample)) + 
+  geom_violin(width = 1.5) +
+  geom_boxplot(outlier.shape = NA) +  # Hide outliers
+  geom_jitter(position = position_jitter(width = 0.15), size = 0.05, alpha = 0.2) +
+  scale_color_manual(values = color_scheme) +
+  theme_minimal() + 
+  labs(title = "Violin: log2(GeTMM) normalized", y = "log2(GeTMM) genes", tag = "B-1") +
+  theme(legend.title = element_blank(), plot.title = element_text(size = box_title_size),
+        axis.ticks.x = element_blank(), axis.text.x = element_blank()) + 
+  egg::theme_article(base_size = box_title_size)
+
+# Create a density plot
+density_plot <- ggplot(log2getmm_long_df, aes(x = Value, color = Sample, linetype = Sample)) + 
+  geom_density(alpha = 0.2, linewidth = 0.15) + 
+  coord_cartesian(ylim = c(0, 1)) +
+  scale_color_manual(values = color_scheme) +
+  scale_linetype_manual(values = linetypes) +
+  theme_minimal() + 
+  labs(title = "Density: log2(GeTMM) normalized", x = "log2(GeTMM)", y = "Density", tag = "B-2") +
+  theme(legend.title = element_blank(), plot.title = element_text(size = box_title_size)) + 
+  egg::theme_article(base_size = box_title_size)
+
+# Create an ECDF plot
+ecdf_plot <- ggplot(log2getmm_long_df, aes(x = Value, color = Sample, linetype = Sample)) + 
+  stat_ecdf(linewidth = 0.2, alpha = 0.5) +
+  scale_color_manual(values = color_scheme) +
+  scale_linetype_manual(values = linetypes) +
+  theme_minimal() + 
+  labs(title = "ECDF: log2(GeTMM) normalized", x = "log2(GeTMM)", y = "Cumulative Proportion", tag = "B-3") +
+  theme(legend.title = element_blank(), plot.title = element_text(size = box_title_size)) + 
+  egg::theme_article(base_size = box_title_size)
+
+# Arrange the plots into a single object
+normalization <- arrangeGrob(violin_plot, density_plot, ecdf_plot, ncol = 3, nrow = 2)
+
+# Draw the plots on the current graphic device
+grid.draw(normalization)
+
+# Save the plots to files
+ggsave("./Output_figures_n_plots/fig1.1_normalization.svg", plot=normalization, device=CairoSVG, width = 9, height = 4.5) # height 5.5 for 3*4 plot
+ggsave("./Output_figures_n_plots/fig1.1_normalization.pdf", plot=normalization, device=CairoPDF, width = 9, height = 4.5)
+ggsave("./Output_figures_n_plots/fig1.1_normalization.png", plot=normalization, width = 9, height = 4.5, dpi=400)
+```
+
+
+```{r equal variance testing}
+# Define empirical and simulated column names
+empirical_cols <- c("p1", "wt")
+simulated_cols <- c("p1_sim1", "p1_sim2", "p1_sim3", "wt_sim1", "wt_sim2", "wt_sim3")
+
+# Define a function to perform Levene's Test on a given row
+calculate_levene_pval <- function(row) {
+  group_factor <- factor(rep(c("empirical", "simulated"), 
+                             times = c(length(empirical_cols), length(simulated_cols))))
+  levenes_res <- leveneTest(y = c(row[empirical_cols], row[simulated_cols]), group = group_factor)
+  levenes_res[1, "Pr(>F)"]
+}
+
+# Define a function to perform Bartlett's Test on a given row
+calculate_bartlett_pval <- function(row) {
+  bartlett_res <- bartlett.test(list(row[empirical_cols], row[simulated_cols]))
+  bartlett_res$p.value
+}
+
+# Apply the defined functions to calculate p-values
+levene_pvals <- apply(log2getmm, 1, calculate_levene_pval)
+bartlett_pvals <- apply(log2getmm, 1, calculate_bartlett_pval)
+
+# Combine the p-values into a data frame for visualization
+heteroscedasticity_pvals_df <- data.frame(
+  method = rep(c("Levene", "Bartlett"), each = length(levene_pvals)),
+  p_value = c(levene_pvals, bartlett_pvals)
+)
+
+# Plot histograms to compare p-values from Levene's and Bartlett's tests
+heteroscedasticity_test_plot <- ggplot(heteroscedasticity_pvals_df, aes(x = p_value, fill = method)) +
+  geom_histogram(binwidth = 0.02, position = "identity", alpha = 0.5) +
+  scale_fill_manual(values = c("Levene" = "#0072B2", "Bartlett" = "#D55E00")) +
+  labs(
+    title = "P-value Histograms from Levene's and Bartlett's Tests",
+    x = "P-value",
+    y = "Frequency"
+  ) +
+  theme_minimal() +
+  egg::theme_article(base_size = 10)
+
+grid.draw(heteroscedasticity_test_plot)
+ggsave("./Output_figures_n_plots/fig1.2_log2getmm_heteroscedasticity.pdf", plot=heteroscedasticity_test_plot, device=CairoPDF, width = 6, height = 4)
+ggsave("./Output_figures_n_plots/fig1.2_log2getmm_heteroscedasticity.svg", plot=heteroscedasticity_test_plot, device=CairoSVG, width = 6, height = 4)
+ggsave("./Output_figures_n_plots/fig1.2_log2getmm_heteroscedasticity.png", plot=heteroscedasticity_test_plot, width = 6, height = 4)
+```
+
+```{r statistical test for distrbutional similarity}
+# Create a list of vector pairs
+
+log2getmm_vector_pairs <- list(
+  list(log2getmm_df$p1, log2getmm_df$p1_sim1),  list(log2getmm_df$p1, log2getmm_df$p1_sim2),  list(log2getmm_df$p1, log2getmm_df$p1_sim3),
+  list(log2getmm_df$wt, log2getmm_df$wt_sim1),  list(log2getmm_df$wt, log2getmm_df$wt_sim2),  list(log2getmm_df$wt, log2getmm_df$wt_sim3))
+
+pair_names <- c("p1 vs p1_sim1", "p1 vs p1_sim2", "p1 vs p1_sim3",
+                "wt vs wt_sim1", "wt vs wt_sim2", "wt vs wt_sim3")
+
+# Mann-Whitney U test (Wilcoxon signed-rank test) # independent sample assumption
+run_mannwhitney_test <- function(pair, pair_name) {
+  test_result <- stats::wilcox.test(pair[[1]], pair[[2]], paired = FALSE)
+  tibble::tibble(Samples = pair_name, Mann_Whitney_U_Stat = test_result$statistic, p_value = test_result$p.value)
+}
+
+# Kruskal-Wallis test (this is for more than two groups)
+run_kruskal_test <- function(pair, pair_name) {
+  test_result <- stats::kruskal.test(list(pair[[1]], pair[[2]])) # Extend the list for more groups
+  tibble::tibble(Samples = pair_name, Kruskal_Wallis_Stat = test_result$statistic, p_value = test_result$p.value)
+}
+
+# Kolmogorov–Smirnov test
+run_ks_test <- function(pair, pair_name) {
+  set.seed(519)
+  test_result <- stats::ks.test(pair[[1]], pair[[2]], alternative = "two.sided", simulate.p.value = TRUE, exact = TRUE , B=as.integer(length(pair[[1]])))
+  tibble::tibble(Samples = pair_name, Kolmogorov_Smirnov_D_Stat = test_result$statistic, p_value = test_result$p.value)
+}
+# Cramér-von Mises test
+run_cvm_test <- function(pair, pair_name) {
+  set.seed(519)
+  test_result <- twosamples::cvm_test(pair[[1]], pair[[2]], nboots = length(pair[[1]]))
+  tibble::tibble(Samples = pair_name, Cramér_von_Mises_Stat = test_result[[1]], p_value = test_result[[2]])
+}
+
+# Apply the tests
+log2getmm_mannwhitney_result <- map2_dfr(log2getmm_vector_pairs, pair_names, run_mannwhitney_test) %>% mutate(p_value_rounded = round(p_value, 4))
+log2getmm_mannwhitney_result %>% as.matrix()
+log2getmm_kruskal_result <- map2_dfr(log2getmm_vector_pairs, pair_names, run_kruskal_test) %>% mutate(p_value_rounded = round(p_value, 4))
+log2getmm_kruskal_result %>%  as.matrix()
+log2getmm_ks_result <- map2_dfr(log2getmm_vector_pairs, pair_names, run_ks_test)%>% mutate(p_value_rounded = round(p_value, 4))
+log2getmm_ks_result %>% as.matrix()
+log2getmm_cvm_result <- map2_dfr(log2getmm_vector_pairs, pair_names, run_cvm_test) %>% mutate(p_value_rounded = round(p_value, 4))
+log2getmm_cvm_result %>% as.matrix()
+
+# Creating the initial dataframe using mannwhitney_result and setting "Samples" as rownames
+log2getmm_dist_test_res <- log2getmm_mannwhitney_result %>%
+  mutate(across(everything(), as.character)) %>% 
+  left_join(log2getmm_kruskal_result, by = "Samples") %>%
+  left_join(log2getmm_ks_result, by = "Samples") %>% 
+  left_join(log2getmm_cvm_result, by = "Samples")
+
+# Print the resulting dataframe
+write.csv(log2getmm_dist_test_res, file = "./Output_figures_n_plots/table1_log2getmm_dist_test_res.csv", row.names = TRUE)
+
+qq_title_size <- 6.5
+```
+
+```{r limma ebayes trend true}
+# Design matrix
+design <- model.matrix(~ 0 + group) # Explicitly exclude intercept to get coefficients for each group
+colnames(design) <- levels(group)
+
+# Fit linear model using limma
+fit <- lmFit(log2getmm, design)
+
+# Define contrasts for differential expression
+contrast.matrix <- makeContrasts(exp_vs_sim = exp - sim, levels=design)
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit2, trend=TRUE)
+
+# Extract results
+res_limma <- topTable(fit2, coef="exp_vs_sim", n=Inf)
+```
+
+```{r DESeq2 with GeTMM}
+# Create a DESeqDataSet from the matrix of GeTMM normalized counts
+colData <- data.frame(row.names=colnames(getmm), group=group)
+# rounded the GeTMM normalized counts to integers since DESeq2 requires integer counts
+dds_deseq <- DESeqDataSetFromMatrix(countData = round(getmm), colData = colData, design = ~ group)
+
+# Run the DESeq function
+dds_deseq <- DESeq(dds_deseq,fitType='local')
+plotDispEsts(dds_deseq, main= "dispEst: local")
+
+# Extract results
+res_deseq <- results(dds_deseq, contrast=c("group", "exp", "sim"))
+res_deseq$baseMean <- log2(res_deseq$baseMean)
+res_deseq <- res_deseq %>% as.data.frame
+```
+
+```{r DESeq2 with GeTMM - full dataset}
+# Create a DESeqDataSet from the matrix of GeTMM normalized counts
+colData_full <- data.frame(row.names=colnames(getmm_unfilt), group=group)
+# rounded the GeTMM normalized counts to integers since DESeq2 requires integer counts
+dds_deseq_full <- DESeqDataSetFromMatrix(countData = round(getmm_unfilt), colData = colData, design = ~ group)
+
+# Run the DESeq function
+dds_deseq_full <- DESeq(dds_deseq_full,fitType='local')
+plotDispEsts(dds_deseq_full, main= "dispEst: local, full dataset")
+
+# Extract results
+res_deseq_full <- results(dds_deseq_full, contrast=c("group", "exp", "sim"))
+res_deseq_full$baseMean <- log2(res_deseq_full$baseMean)
+res_deseq_full <- res_deseq_full %>% as.data.frame
+```
+
+```{r QQ plot}
+# Function to Create Overlay QQ Plot
+create_overlay_qq_plot <- function(data_df, empirical_col, simulated_cols, title, xlab, ylab, legend_labels) {
+  # Initialize plot
+  p <- ggplot() +
+       geom_abline(intercept = 0, slope = 1, color = "red") +
+       coord_cartesian(xlim = c(2.5, 12), ylim = c(2.5, 12)) +
+       labs(title = title, x = xlab, y = ylab, color = "Comparison set") +
+       theme(legend.title = element_text(size = 10))
+  
+  colors <- c("orange", "blue", "green")
+  
+  for (i in 1:length(simulated_cols)) {
+    sim_col <- simulated_cols[i]
+    
+    quantiles <- data.frame(
+      theoretical = sort(data_df[[sim_col]]),
+      sample = sort(data_df[[empirical_col]]),
+      label = rep(legend_labels[i], length(data_df[[empirical_col]]))
+    )
+    
+    p <- p + geom_point(data = quantiles, aes(x = theoretical, y = sample, color = label), alpha = 0.3) 
+  }
+  
+  p <- p + scale_color_manual(name = "Comparison set", values = setNames(colors, legend_labels)) +
+    theme(legend.title=element_blank(), plot.title = element_text(size = qq_title_size)) +
+    egg::theme_article(base_size = qq_title_size)
+  
+  return(p)
+}
+
+# Legend labels
+p1_legend_labels <- c("P1 vs P1_sim1", "P1 vs P1_sim2", "P1 vs P1_sim3")
+wt_legend_labels <- c("WT vs WT_sim1", "WT vs WT_sim2", "WT vs WT_sim3")
+
+# Create Overlay QQ Plots
+p1_overlay <- create_overlay_qq_plot(log2getmm_df, "p1", c("p1_sim1", "p1_sim2", "p1_sim3"), 
+                                     "Overlay QQ Plot: p1 vs. Simulated", 
+                                     "Theoretical Quantiles", "Empirical Quantiles of p1", p1_legend_labels)
+
+wt_overlay <- create_overlay_qq_plot(log2getmm_df, "wt", c("wt_sim1", "wt_sim2", "wt_sim3"), 
+                                     "Overlay QQ Plot: wt vs. Simulated", 
+                                     "Theoretical Quantiles", "Empirical Quantiles of wt", wt_legend_labels)
+
+# Arrange the plots in a grid
+qq_plot_grid <- grid.arrange(p1_overlay, wt_overlay, ncol = 2)
+
+ggsave("./Output_figures_n_plots/fig1.3_log2getmm_qq_plots.svg", plot=qq_plot_grid, device=CairoSVG, width = 6, height = 2)
+ggsave("./Output_figures_n_plots/fig1.3_log2getmm_qq_plots.pdf", plot=qq_plot_grid, device=CairoPDF, width = 6, height = 2)
+ggsave("./Output_figures_n_plots/fig1.3_log2getmm_qq_plots.png", plot=qq_plot_grid, width = 6, height = 2, dpi=300)
+
+```
+
+```{r }
+# Prepare annotation data from DESeq2 object
+# Rename columns and create a new column 'biotype' based on pattern matching in 'sample'
+annotation_data <- as.data.frame(colData(dds_deseq)) %>%
+  dplyr::rename(Seq_depth_factor = sizeFactor) %>%
+  rownames_to_column(var = "sample") %>%
+  mutate(biotype = dplyr::if_else(grepl("p1", sample), "P1", "WT")) %>%
+  mutate(biotype = as.factor(biotype))
+
+# Define color palette for annotation
+annotation_colors <- list(
+  biotype = c(
+    "P1" = "#FF20AD",
+    "WT" = "#00E4E4"
+  )
+)
+
+# Define a color range using a color ramp
+color_range <- colorRampPalette(c("blue", "white", "red"))(256)
+
+# Create a heatmap of log2-transformed GeTMM data
+heatmap_getmm <- pheatmap::pheatmap(
+    mat = log2getmm,
+    scale = "none",
+    color = color_range,
+    cluster_rows = TRUE,
+    cluster_cols = TRUE,
+    show_rownames = FALSE,
+    show_colnames = TRUE,
+    use_raster = TRUE,
+    main = "log2(GeTMM)",
+    annotation_col = annotation_data %>% dplyr::select(biotype),
+    annotation_colors = annotation_colors,
+    column_split = annotation_data$biotype
+)
+
+heatmap_getmm
+
+ggsave("./Output_figures_n_plots/fig1.4_manuscript_heatmap.pdf", plot=heatmap_getmm, device=CairoPDF, width = 4, height = 6)
+```
+
+```{r result with annotation}
+# Set thresholds for adjusted p-value and log fold change
+p_threshold <- 0.05
+lfc_threshold <- 1
+
+# Annotate and rename columns of limma results
+res_limma_annot <- res_limma %>%
+  tibble::rownames_to_column("rowname") %>%
+  left_join(annotation_df, by = c("rowname" = "locus_tag")) %>%
+  tibble::column_to_rownames("rowname") %>%
+  dplyr::rename_with(~ case_when(
+    . == "logFC" ~ "log2FoldChange",
+    . == "AveExpr" ~ "log2MeanGeTMM",
+    . == "t" ~ "stat",
+    . == "P.Value" ~ "pvalue",
+    . == "adj.P.Val" ~ "padj",
+    TRUE ~ .
+  ))
+
+# Annotate and rename columns of DESeq2 results
+res_deseq_annot <- res_deseq %>%
+  tibble::rownames_to_column("rowname") %>%
+  left_join(annotation_df, by = c("rowname" = "locus_tag")) %>%
+  tibble::column_to_rownames("rowname") %>%
+  dplyr::rename_with(~ case_when(
+    . == "baseMean" ~ "log2MeanGeTMM",
+    TRUE ~ .
+  ))
+
+# Annotate and rename columns of full DESeq2 results
+res_deseq_annot_full <- res_deseq_full %>%
+  tibble::rownames_to_column("rowname") %>%
+  left_join(annotation_df, by = c("rowname" = "locus_tag")) %>%
+  tibble::column_to_rownames("rowname") %>%
+  dplyr::rename_with(~ case_when(
+    . == "baseMean" ~ "log2MeanGeTMM",
+    TRUE ~ .
+  ))
+
+# Optionally, display the tables using DT for interactive exploration
+# DT::datatable(res_limma_annot, rownames = FALSE)
+# DT::datatable(res_deseq_annot, rownames = FALSE)
+# DT::datatable(res_deseq_annot_full, rownames = FALSE)
+
+# Calculate the number of significant results based on p-value and log fold change thresholds
+n_sig_limma_p <- sum(res_limma_annot$padj < p_threshold, na.rm = TRUE)
+n_sig_deseq_p <- sum(res_deseq_annot$padj < p_threshold, na.rm = TRUE)
+n_sig_deseq_p_full <- sum(res_deseq_annot_full$padj < p_threshold, na.rm = TRUE)
+
+n_sig_limma_p_lfc <- sum(res_limma_annot$padj < p_threshold & abs(res_limma_annot$log2FoldChange) > lfc_threshold, na.rm = TRUE)
+n_sig_deseq_p_lfc <- sum(res_deseq_annot$padj < p_threshold & abs(res_deseq_annot$log2FoldChange) > lfc_threshold, na.rm = TRUE)
+n_sig_deseq_p_lfc_full <- sum(res_deseq_annot_full$padj < p_threshold & abs(res_deseq_annot_full$log2FoldChange) > lfc_threshold, na.rm = TRUE)
+```
+
+```{r MA Volcano}
+# Plotting
+ma_volc_title_size <- 7  # Set the title size
+
+plot_ma_volc <- grid.arrange(
+
+ggplot(res_deseq_annot, aes(x = log2MeanGeTMM, y = log2FoldChange)) +
+  geom_point(aes(color = padj < 0.05), alpha = 0.5, size = 1) +
+  scale_color_manual(values = c("TRUE" = "salmon", "FALSE" = "lightgrey"), name = "Threshold") +
+  theme_minimal() +
+  labs(title = "MA Plot: DESeq2",
+       y = bquote(~Log[2]~ 'fold GeTMM change'),
+       x = bquote(~Log[2]~ 'Mean(GeTMM)'),
+       color = "Threshold", tag = "A") +
+  geom_hline(yintercept = 0, color = "blue") +
+  scale_x_continuous(trans = 'log2') +
+  coord_cartesian(ylim = c(-3, 3)) +
+  theme(legend.position = "right", 
+        legend.title = element_blank(),
+        plot.title = element_text(size = ma_volc_title_size)) + 
+  egg::theme_article(base_size = ma_volc_title_size) + 
+  annotate("text", x = Inf, y = -2.8, label = paste("Sig. genes:", n_sig_deseq_p), hjust = "right",
+           size = ma_volc_title_size/2.5),
+
+EnhancedVolcano(res_deseq_annot,
+    lab = res_deseq_annot$Preferred_name,
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = 0.05,
+    FCcutoff = 1,
+    pointSize = 1,
+    labSize = 2,
+    colAlpha = 0.5,
+    legendPosition = 'right',
+    legendLabSize = 12,
+    legendIconSize = 4.0,
+    drawConnectors = TRUE,
+    widthConnectors = 0.2,
+    max.overlaps = Inf) + 
+    theme_minimal() +
+  coord_cartesian(xlim = c(-4, 4)) +
+  labs(title = "Volcano: DESeq2",
+       x = bquote(~Log[2]~ 'fold GeTMM change'),
+       y = bquote(~Log[10]~ '(Adjusted p-value)'), 
+       color = "Threshold", tag = " ") +
+  theme(legend.title = element_blank(), plot.title = element_text(size = ma_volc_title_size)) + 
+  egg::theme_article(base_size = ma_volc_title_size) + 
+  annotate("text", x = Inf, y = Inf, label = paste("Sig. genes:", n_sig_deseq_p_lfc), hjust = 1.05, vjust = 1.2,
+           size = ma_volc_title_size/3),
+
+ggplot(res_limma_annot, aes(x = log2MeanGeTMM, y = log2FoldChange)) +
+  geom_point(aes(color = padj < 0.05), alpha = 0.5, size = 1) +
+  scale_color_manual(values = c("TRUE" = "salmon", "FALSE" = "lightgrey"), name = "Threshold") +
+  theme_minimal() +
+  labs(title = "MA Plot: limma-trend",
+       y = bquote(~Log[2]~ 'fold GeTMM change'),
+       x = bquote(~Log[2]~ 'Mean(GeTMM)'),
+       color = "Threshold", tag = "B") +
+  geom_hline(yintercept = 0, color = "blue") +
+  scale_x_continuous(trans = 'log2') +
+  coord_cartesian(ylim = c(-3, 3)) +
+  theme(legend.position = "right", 
+        legend.title = element_blank(),
+        plot.title = element_text(size = ma_volc_title_size)) + 
+  egg::theme_article(base_size = ma_volc_title_size) + 
+  annotate("text", x = Inf, y = -2.8, label = paste("Sig. genes:", n_sig_limma_p), hjust = "right",
+           size = ma_volc_title_size/2.5),
+
+EnhancedVolcano(res_limma_annot,
+    lab = res_limma_annot$Preferred_name,
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = 0.05,
+    FCcutoff = 1,
+    pointSize = 1,
+    labSize = 2,
+    colAlpha = 0.5,
+    legendPosition = 'right',
+    legendLabSize = 12,
+    legendIconSize = 4.0,
+    drawConnectors = TRUE,
+    widthConnectors = 0.2,
+    max.overlaps = Inf) + 
+    theme_minimal() +
+  coord_cartesian(xlim = c(-4, 4)) +
+  labs(title = "Volcano: limma-trend",
+       x = bquote(~Log[2]~ 'fold GeTMM change'),
+       y = bquote(~Log[10]~ '(Adjusted p-value)'), 
+       color = "Threshold", tag = " ") +
+  theme(legend.title = element_blank(), plot.title = element_text(size = ma_volc_title_size)) + 
+  egg::theme_article(base_size = ma_volc_title_size) + 
+  annotate("text", x = Inf, y = Inf, label = paste("Sig. genes:", n_sig_limma_p_lfc), hjust = 1.05, vjust = 1.2,
+           size = ma_volc_title_size/3),
+
+  ncol=2, nrow=2)
+
+ggsave("./Output_figures_n_plots/fig2.1_MA_Volcano.svg", plot=plot_ma_volc, device=CairoSVG, width = 8, height = 6) # height 5.5 for 3*4 plot
+ggsave("./Output_figures_n_plots/fig2.1_MA_Volcano.pdf", plot=plot_ma_volc, device=CairoPDF, width = 8, height = 6)
+ggsave("./Output_figures_n_plots/fig2.1_MA_Volcano.png", plot=plot_ma_volc, width = 8, height = 6, dpi=400)
+
+grid.draw(plot_ma_volc)
+```
+
+```{r MA Volcano, full dataset supplementary}
+# Plotting
+ma_volc_title_size <- 7  # Set the title size
+
+plot_ma_volc_full <- grid.arrange(
+
+ggplot(res_deseq_annot_full, aes(x = log2MeanGeTMM, y = log2FoldChange)) +
+  geom_point(aes(color = padj < 0.05), alpha = 0.5, size = 1) +
+  scale_color_manual(values = c("TRUE" = "salmon", "FALSE" = "lightgrey"), name = "Threshold") +
+  theme_minimal() +
+  labs(title = "MA Plot: DESeq2, full dataset",
+       y = bquote(~Log[2]~ 'fold GeTMM change'),
+       x = bquote(~Log[2]~ 'Mean(GeTMM)'),
+       color = "Threshold", tag = "A") +
+  geom_hline(yintercept = 0, color = "blue") +
+  scale_x_continuous(trans = 'log2') +
+  coord_cartesian(ylim = c(-3, 3)) +
+  theme(legend.position = "right", 
+        legend.title = element_blank(),
+        plot.title = element_text(size = ma_volc_title_size)) + 
+  egg::theme_article(base_size = ma_volc_title_size) + 
+  annotate("text", x = Inf, y = -2.8, label = paste("Sig. genes:", n_sig_deseq_p_full), hjust = "right",
+           size = ma_volc_title_size/2.5),
+
+EnhancedVolcano(res_deseq_annot_full,
+    lab = res_deseq_annot_full$Preferred_name,
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = 0.05,
+    FCcutoff = 1,
+    pointSize = 1,
+    labSize = 2,
+    colAlpha = 0.5,
+    legendPosition = 'right',
+    legendLabSize = 12,
+    legendIconSize = 4.0,
+    drawConnectors = TRUE,
+    widthConnectors = 0.2,
+    max.overlaps = Inf) + 
+    theme_minimal() +
+  coord_cartesian(xlim = c(-4, 4)) +
+  labs(title = "Volcano: DESeq2, full dataset",
+       x = bquote(~Log[2]~ 'fold GeTMM change'),
+       y = bquote(~Log[10]~ '(Adjusted p-value)'), 
+       color = "Threshold", tag = " ") +
+  theme(legend.title = element_blank(), plot.title = element_text(size = ma_volc_title_size)) + 
+  egg::theme_article(base_size = ma_volc_title_size) + 
+  annotate("text", x = Inf, y = Inf, label = paste("Sig. genes:", n_sig_deseq_p_lfc_full), hjust = 1.05, vjust = 1.2,
+           size = ma_volc_title_size/3),
+
+  ncol=2, nrow=1)
+
+ggsave("./Output_figures_n_plots/supplementary_MA_Volcano_full.svg", plot=plot_ma_volc_full, device=CairoSVG, width = 8, height = 4) # height 5.5 for 3*4 plot
+ggsave("./Output_figures_n_plots/supplementary_MA_Volcano_full.pdf", plot=plot_ma_volc_full, device=CairoPDF, width = 8, height = 4)
+ggsave("./Output_figures_n_plots/supplementary_MA_Volcano_full.png", plot=plot_ma_volc_full, width = 8, height = 4, dpi=400)
+
+grid.draw(plot_ma_volc_full)
+```
+
+
+```{r overlap DA genes}
+# Identify differentially abundant genes from limma and DESeq results
+da_limma <- rownames(res_limma_annot[res_limma_annot$padj < p_threshold & abs(res_limma_annot$log2FoldChange) > lfc_threshold, ])
+da_deseq <- rownames(res_deseq_annot[res_deseq_annot$padj < p_threshold & abs(res_deseq_annot$log2FoldChange) > lfc_threshold, ])
+
+# Prepare data for visualization
+# Create a dataframe with all unique genes
+# Calculate overlaps and unique genes for each method
+overlap <- length(intersect(da_limma, da_deseq))
+only_limma <- length(setdiff(da_limma, da_deseq))
+only_deseq <- length(setdiff(da_deseq, da_limma))
+neither <- nrow(res_limma_annot) - (overlap + only_limma + only_deseq)
+
+# Print matrix
+overlap_matrix <- matrix(c(overlap, only_deseq, only_limma, neither), nrow=2)
+rownames(overlap_matrix) <- c("DA in DESeq", "Not DA in DESeq")
+colnames(overlap_matrix) <- c("DA in limma", "Not DA in limma")
+print(overlap_matrix)
+
+# Data preparation
+overlap_gene_df <- data.frame(
+  gene = union(da_limma, da_deseq)
+)
+
+# Add columns indicating whether each gene is present in limma or DESeq results
+overlap_gene_df$limma <- overlap_gene_df$gene %in% da_limma
+overlap_gene_df$deseq <- overlap_gene_df$gene %in% da_deseq
+
+# UpSet Plot using ComplexUpset with modifications
+overlap_gene_df$gene <- as.character(overlap_gene_df$gene)
+sets <- c("limma", "deseq")
+upset_complex <- ComplexUpset::upset(overlap_gene_df, sets) +
+  ggtitle("Identified DA genes") +
+  labs(title = "Overlap of Differentially Abundant Genes") +
+  theme_minimal() +
+  theme(
+    axis.title.x=element_blank(),
+    axis.title.y=element_blank(),
+    axis.text.x=element_blank(),
+    axis.text.y=element_blank(),
+    axis.ticks=element_blank()
+  ) +
+  egg::theme_article()
+
+# Save the ComplexUpset Plot as PNG and PDF
+ggsave(filename = "./Output_figures_n_plots/fig2.2_overlap_plot_upset_complex.png", plot = upset_complex, width = 6, height = 4, dpi = 300)
+ggsave(filename = "./Output_figures_n_plots/fig2.2_overlap_plot_upset_complex.pdf", plot = upset_complex, width = 6, height = 4)
+```
+
+```{r getmm and annotation parsion}
+# adding annotation to counts
+log2getmm_df <- log2getmm %>% as.data.frame()
+
+log2getmm_deseq <- log2getmm_df %>% 
+  tibble::rownames_to_column(var = "rowname_col") %>%
+  inner_join(res_deseq_annot %>% rownames_to_column(var = "rowname_col"), by = "rowname_col") %>% 
+  tibble::column_to_rownames("rowname_col")
+
+log2getmm_deseq_full <- log2getmm_df %>% 
+  tibble::rownames_to_column(var = "rowname_col") %>%
+  inner_join(res_deseq_annot_full %>% rownames_to_column(var = "rowname_col"), by = "rowname_col") %>% 
+  tibble::column_to_rownames("rowname_col")
+
+log2getmm_limma <- log2getmm_df %>% 
+  tibble::rownames_to_column(var = "rowname_col") %>%
+  inner_join(res_limma_annot %>% rownames_to_column(var = "rowname_col"), by = "rowname_col") %>% 
+  tibble::column_to_rownames("rowname_col")
+
+# Optionally, display the tables using DT for interactive exploration
+# log2getmm_deseq %>% DT::datatable(rownames = F)
+# log2getmm_deseq_full %>% DT::datatable(rownames = F)
+# log2getmm_limma %>% DT::datatable(rownames = F)
+```
+
+```{r only filter significant genes for heatmap}
+# Adjusted p-value threshold
+p_threshold <- 0.05
+lfc_threshold <- 1
+
+# both lfc and p value
+sig_deseq <- log2getmm_deseq %>% filter(padj < p_threshold) 
+sig_deseq_full <- log2getmm_deseq_full %>% filter(padj < p_threshold) 
+sig_limma <- log2getmm_limma %>% filter(padj < p_threshold) 
+
+# both lfc and p value
+DA_deseq <- log2getmm_deseq %>% filter(padj < p_threshold) %>% filter(abs(log2FoldChange) > lfc_threshold)
+DA_deseq_full <- log2getmm_deseq_full %>% filter(padj < p_threshold) %>% filter(abs(log2FoldChange) > lfc_threshold)
+DA_limma <- log2getmm_limma %>% filter(padj < p_threshold) %>% filter(abs(log2FoldChange) > lfc_threshold)
+
+# Filtering for COG is not NA
+cog_sig_deseq <-  sig_deseq[!is.na(sig_deseq$COG_category), ]
+cog_sig_deseq_full <-  sig_deseq_full[!is.na(sig_deseq_full$COG_category), ]
+cog_sig_limma <- sig_limma[!is.na(sig_limma$COG_category), ]
+
+# Filtering for COG is not NA
+cog_DA_deseq <-  DA_deseq[!is.na(DA_deseq$COG_category), ]
+cog_DA_deseq_full <-  DA_deseq_full[!is.na(DA_deseq_full$COG_category), ]
+cog_DA_limma <- DA_limma[!is.na(DA_limma$COG_category), ]
+```
+
+```{r prepareing cog_sig_overlap dataframe}
+# Identify overlapping genes from overlap_gene_df
+overlap_genes <- overlap_gene_df %>% 
+  filter(limma == TRUE & deseq == TRUE) %>% 
+  pull(gene)
+
+# Create a subset of cog_DA_deseq with only the overlapping genes
+sig_overlap <- DA_deseq %>% 
+  filter(row.names(.) %in% overlap_genes)
+
+cog_sig_overlap <-  sig_overlap[!is.na(sig_overlap$COG_category), ]
+```
+
+```{r Defining color scheme for COGs}
+cog_descriptions <- data.frame(
+  COG_category = c("J", "A", "K", "L", "B", "D", "Y", "V", "T", 
+                   "M", "N", "Z", "W", "U", "O", "X", "C", "G", 
+                   "E", "F", "H", "I", "P", "Q", "R", "S"),
+  COG_functional_family = c(
+  "J - TRANSLATION, RIBOSOMAL STRUCTURE AND BIOGENESIS",
+  "A - RNA PROCESSING AND MODIFICATION",
+  "K - TRANSCRIPTION",
+  "L - REPLICATION, RECOMBINATION AND REPAIR",
+  "B - CHROMATIN STRUCTURE AND DYNAMICS",
+  "D - CELL CYCLE CONTROL, CELL DIVISION, CHROMOSOME PARTITIONING",
+  "Y - NUCLEAR STRUCTURE",
+  "V - DEFENSE MECHANISMS",
+  "T - SIGNAL TRANSDUCTION MECHANISMS",
+  "M - CELL WALL/MEMBRANE/ENVELOPE BIOGENESIS",
+  "N - CELL MOTILITY",
+  "Z - CYTOSKELETON",
+  "W - EXTRACELLULAR STRUCTURES",
+  "U - INTRACELLULAR TRAFFICKING, SECRETION, AND VESICULAR TRANSPORT",
+  "O - POSTTRANSLATIONAL MODIFICATION, PROTEIN TURNOVER, CHAPERONES",
+  "X - MOBILOME: PROPHAGES, TRANSPOSONS",
+  "C - ENERGY PRODUCTION AND CONVERSION",
+  "G - CARBOHYDRATE TRANSPORT AND METABOLISM",
+  "E - AMINO ACID TRANSPORT AND METABOLISM",
+  "F - NUCLEOTIDE TRANSPORT AND METABOLISM",
+  "H - COENZYME TRANSPORT AND METABOLISM",
+  "I - LIPID TRANSPORT AND METABOLISM",
+  "P - INORGANIC ION TRANSPORT AND METABOLISM",
+  "Q - SECONDARY METABOLITES BIOSYNTHESIS, TRANSPORT AND CATABOLISM",
+  "R - GENERAL FUNCTION PREDICTION ONLY",
+  "S - FUNCTION UNKNOWN")
+)
+
+cog_colors <- c(
+  "M" = "#890000",
+  "K" = "#CC79A7",
+  "L" = "#673AB7",
+  "H" = "#000079",
+  "E" = "#008080",
+  "G" = "#006000",
+  "C" = "#76FF03", 
+  "T" = "#FFEB3B",
+  "P" = "#FF7000",
+  "U" = "#F15C80",
+  "J" = "#9C27B0", 
+  "I" = "#03A9F4", 
+  "V" = "#657D9B",
+  "O" = "#C5FA30",
+  "F" = "#FFB000",
+  "D" = "#D8BFD8", 
+  "Q" = "#795548",
+  "S" = "#9E9E9E")
+```
+
+```{r cluster of orthologous groups (COG) functional classification}
+# Function to process COG category data
+process_COG_category <- function(dataframe, cog_descriptions) {
+  # Filter out NAs and categorize genes based on log2FoldChange
+  filtered_data <- dataframe %>% 
+    filter(!is.na(COG_category)) %>%
+    mutate(representation = ifelse(log2FoldChange > 0, "Overrepresented", "Underrepresented"))
+  
+  # Calculate and adjust counts for each COG_category and representation
+  count_data <- filtered_data %>%
+    group_by(COG_category, representation) %>%
+    summarise(count = n(), .groups = "drop") %>%
+    mutate(count = ifelse(representation == "Underrepresented", -count, count))
+  
+  # Expand multi-letter COG_category rows and calculate adjusted counts
+  expanded_data <- count_data %>%
+    rowwise() %>%
+    mutate(COG_category = strsplit(as.character(COG_category), ""), 
+           count = count / length(COG_category)) %>%
+    unnest(cols = c(COG_category)) %>%
+    group_by(COG_category, representation) %>%
+    summarise(count = sum(count), .groups = "drop") %>%
+    arrange(COG_category) %>%
+    ungroup()
+    
+  # Calculate absolute sum for each COG_category and join descriptions
+  ordering <- expanded_data %>%
+    group_by(COG_category) %>%
+    summarise(abs_sum = sum(abs(count)), .groups = "drop") %>%
+    arrange(desc(abs_sum)) %>%
+    pull(COG_category)
+
+  final_data <- expanded_data %>%
+    left_join(cog_descriptions, by = "COG_category")
+  
+  # Ensure "S" is the lowest level
+  ordered_levels <- c("S", setdiff(ordering, "S"))
+  
+  # Reverse the order for the legend
+  ordered_reverse <- rev(ordered_levels)
+  
+  # Convert COG_category to factor and set the levels
+  final_data$COG_category <- factor(final_data$COG_category, levels = ordered_levels)
+  final_data$COG_category_rev <- factor(final_data$COG_category, levels = ordered_reverse)
+  
+  final_data <- final_data %>% mutate(COG_category = factor(COG_category, levels = ordering))
+
+  return(final_data)
+}
+
+# Define the plotting function
+plot_cog <- function(data, total, title_tag, cog_colors, cog_descriptions, cog_title_size) {
+  ggplot(data, aes(y = COG_category, x = count, fill = COG_category)) +
+    geom_bar(stat = "identity", width = 0.7, color = "black") +
+    geom_vline(xintercept = 0, color = "black", size = 1) + 
+    geom_text(aes(label = sprintf("%.2f%%", 100 * abs(count) / total), hjust = ifelse(count < 0, 1.2, -0.2)), size = 3, position = position_dodge(0.76)) +
+    labs(title = paste("Functional Profile based on COG Categories:", title_tag), y = "Reversed COG Category", x = "Number of Genes") +
+    scale_fill_manual(values = cog_colors, name = "COG Categories", labels = setNames(cog_descriptions$COG_functional_family, cog_descriptions$COG_category)) +
+    scale_x_continuous(limits = c(-20, 70)) +
+    theme_minimal() +
+    theme(legend.position = "right", legend.key.size = unit(0.2, "cm")) +
+    egg::theme_article(base_size = cog_title_size) +
+    annotate("text", x = 70, y = length(unique(data$COG_category)), label = paste("Genes with COG annotation:", round(total)), hjust = "right", size = 2.5)
+}
+
+# Define reverse plot function for COG categories legend extraction
+plot_cog_reverse <- function(data, total, title_tag, cog_colors, cog_descriptions, cog_title_size) {
+  ggplot(data, aes(y = COG_category_rev, x = count, fill = COG_category_rev)) +
+    geom_bar(stat = "identity", width = 0.7, color = "black") +
+    geom_vline(xintercept = 0, color = "black", size = 1) + 
+    geom_text(aes(label = sprintf("%.2f%%", 100 * abs(count) / total), hjust = ifelse(count < 0, 1.2, -0.2)), size = 3, position = position_dodge(0.76)) +
+    labs(title = paste("Functional Profile based on COG Categories:", title_tag), y = "Reversed COG Category", x = "Number of Genes") +
+    scale_fill_manual(values = cog_colors, name = "COG Categories", labels = setNames(cog_descriptions$COG_functional_family, cog_descriptions$COG_category)) +
+    scale_x_continuous(limits = c(-20, 70)) +
+    theme_minimal() +
+    theme(legend.position = "right", legend.key.size = unit(0.2, "cm")) +
+    egg::theme_article(base_size = cog_title_size) +
+    annotate("text", x = 70, y = length(unique(data$COG_category_rev)), label = paste("Genes with COG annotation:", round(total)), hjust = "right", size = 2.5)
+}
+
+# Process COG category data and calculate totals
+cog_deseq <- process_COG_category(DA_deseq, cog_descriptions) 
+cog_limma <- process_COG_category(DA_limma, cog_descriptions)
+cog_overlap <- process_COG_category(sig_overlap, cog_descriptions)
+
+total_deseq <- sum(abs(cog_deseq$count))
+total_limma <- sum(abs(cog_limma$count))
+total_overlap <- sum(abs(cog_overlap$count))
+
+# COG title font size
+cog_title_size = 9
+
+# Create and arrange the plots
+plot_deseq <- plot_cog(cog_deseq, total_deseq, "DESeq2", cog_colors, cog_descriptions, cog_title_size)
+plot_limma <- plot_cog(cog_limma, total_limma, "limma", cog_colors, cog_descriptions, cog_title_size)
+plot_overlap <- plot_cog(cog_overlap, total_overlap, "Consensus DA genes", cog_colors, cog_descriptions, cog_title_size)
+
+plot_deseq_rev <- plot_cog_reverse(cog_deseq, total_deseq, "DESeq2", cog_colors, cog_descriptions, cog_title_size)
+plot_limma_rev <- plot_cog_reverse(cog_limma, total_limma, "limma", cog_colors, cog_descriptions, cog_title_size)
+plot_overlap_rev <- plot_cog_reverse(cog_overlap, total_overlap, "Consensus DA genes", cog_colors, cog_descriptions, cog_title_size)
+
+plot_cog_deseq <- grid.arrange(plot_deseq, plot_deseq_rev, ncol = 2)
+plot_cog_limma <- grid.arrange(plot_limma, plot_limma_rev, ncol = 2)
+plot_cog_overlap <- grid.arrange(plot_overlap, plot_overlap_rev, ncol = 2)
+
+# Save the plots
+ggsave("./Output_figures_n_plots/supplementary_COG_deseq.svg", plot=plot_cog_deseq, device=CairoSVG, width = 20, height = 4)
+ggsave("./Output_figures_n_plots/supplementary_COG_deseq.pdf", plot=plot_cog_deseq, device=CairoPDF, width = 20, height = 4)
+ggsave("./Output_figures_n_plots/supplementary_COG_deseq.png", plot=plot_cog_deseq, width = 20, height = 4, dpi=400)
+
+ggsave("./Output_figures_n_plots/supplementary_COG_limma.svg", plot=plot_cog_limma, device=CairoSVG, width = 20, height = 4)
+ggsave("./Output_figures_n_plots/supplementary_COG_limma.pdf", plot=plot_cog_limma, device=CairoPDF, width = 20, height = 4)
+ggsave("./Output_figures_n_plots/supplementary_COG_limma.png", plot=plot_cog_limma, width = 20, height = 4, dpi=400)
+
+ggsave("./Output_figures_n_plots/fig2.3_COG_overlap.svg", plot=plot_cog_overlap, device=CairoSVG, width = 20, height = 4)
+ggsave("./Output_figures_n_plots/fig2.3_COG_overlap.pdf", plot=plot_cog_overlap, device=CairoPDF, width = 20, height = 4)
+ggsave("./Output_figures_n_plots/fig2.3_COG_overlap.png", plot=plot_cog_overlap, width = 20, height = 4, dpi=400)
+```
+
+```{r enrichment/depletion score }
+# For Directional hypergeometric test
+relative_count_COG_function <- function(df, remove_S) {
+  if(remove_S == TRUE){
+    relative_count_df <-   
+      df[!is.na(df$COG_category), ] %>% 
+      filter(COG_category != "S")
+  }else{
+    relative_count_df <-   
+      df[!is.na(df$COG_category), ]
+  }
+  relative_count_df <- relative_count_df %>% 
+    mutate(representation = ifelse(log2FoldChange > 0, "Overrepresented", "Underrepresented")) %>% 
+    select(log2FoldChange, COG_category, representation) %>% 
+    group_by(COG_category, representation) %>%
+    summarise(count = n(), .groups = "drop") %>% 
+    mutate(count = ifelse(representation == "Underrepresented", -count, count)) %>% 
+    rowwise() %>%
+    mutate(COG_category = strsplit(as.character(COG_category), "")) %>%
+    mutate(count = count / length(COG_category)) %>% 
+    unnest(cols = c(COG_category)) %>% 
+    group_by(COG_category, representation) %>% 
+    summarise(count = round(abs(sum(count))), .groups = "drop") %>% 
+    arrange(COG_category) %>% ungroup() %>% 
+    mutate(COG_category = str_c(COG_category, representation, sep = "_")) %>%
+    select(-representation)
+  return(relative_count_df)
+}
+
+hypergeometric_directional <- function(background_df, sig_df, remove_S){
+counted_background <- relative_count_COG_function(background_df, remove_S) %>% 
+    dplyr::rename(CogNotsig = count) %>% 
+    mutate(NotcogNotsig =(sum(CogNotsig) - CogNotsig))
+  
+  counted_da <- relative_count_COG_function(sig_df, remove_S) %>% 
+    dplyr::rename(CogSig = count) %>% 
+    mutate(NotcogSig = (sum(CogSig) - CogSig))
+  
+  full_ora_matrix_df <- left_join(counted_background, counted_da, by="COG_category") %>%  
+    mutate_all(~replace(., is.na(.), 0))
+  
+  # Separate over-representation and under-representation
+  up_ora_df <- full_ora_matrix_df %>%
+    filter(str_detect(COG_category, "Overrepresented"))
+  
+  down_ora_df <- full_ora_matrix_df %>%
+    filter(str_detect(COG_category, "Underrepresented"))
+
+  # Calculating Fisher's exact test for each category and adjusting p-values
+  p_values_up <- apply(up_ora_df, 1, function(row) {
+    # Extracting the necessary values and ensuring they are numeric
+    CogSig <- as.numeric(row['CogSig'])
+    CogNotsig <- as.numeric(row['CogNotsig'])
+    NotcogSig <- as.numeric(row['NotcogSig'])
+    NotcogNotsig <- as.numeric(row['NotcogNotsig'])
+  
+    # Constructing the contingency table
+    contingency_table <- matrix(c(CogSig, CogNotsig, NotcogSig, NotcogNotsig), nrow = 2)
+  
+    # Performing Fisher's exact test
+      fisher.test(contingency_table, alternative = "greater")$p.value
+  })
+  
+  # Calculating Fisher's exact test for each category and adjusting p-values
+  p_values_down <- apply(down_ora_df, 1, function(row) {
+    # Extracting the necessary values and ensuring they are numeric
+    CogSig <- as.numeric(row['CogSig'])
+    CogNotsig <- as.numeric(row['CogNotsig'])
+    NotcogSig <- as.numeric(row['NotcogSig'])
+    NotcogNotsig <- as.numeric(row['NotcogNotsig'])
+  
+    # Constructing the contingency table
+    contingency_table <- matrix(c(CogSig, CogNotsig, NotcogSig, NotcogNotsig), nrow = 2)
+  
+    # Performing Fisher's exact test
+      fisher.test(contingency_table, alternative = "less")$p.value
+  })
+  
+  # Adding the  p-values to your dataframe
+  up_ora_df$p_value <- p_values_up
+  down_ora_df$p_value <- p_values_down
+  
+  # # Adjusting for multiple comparisons using the Benjamini-Hochberg method
+  # up_ora_df$adj_p_value <- p.adjust(up_ora_df$p_value, method = "BH")
+  # down_ora_df$adj_p_value <- p.adjust(down_ora_df$p_value, method = "BH")
+  
+  # Combining the results into a single dataframe
+  final_results <- bind_rows(up_ora_df, down_ora_df)
+  final_results$adj_p_value <- p.adjust(final_results$p_value, method = "BH")
+  
+  final_results <- final_results %>% 
+    mutate(enrichment = -log(p_value, base = 10)) %>%
+    arrange(p_value) %>% 
+    separate(COG_category, into = c("COG_category", "representation"), sep = "_")
+  
+  # Returning the final results
+  return(final_results)
+}
+
+# usage
+enrich_res_DA <- hypergeometric_directional(background_df=res_deseq_annot_full, sig_df=DA_deseq_full, remove_S=FALSE)
+enrich_res_DA_noS <- hypergeometric_directional(background_df=res_deseq_annot_full, sig_df=DA_deseq_full, remove_S=TRUE)
+enrich_res_Overlap <- hypergeometric_directional(background_df=res_deseq_annot_full, sig_df=cog_sig_overlap, remove_S=FALSE)
+enrich_res_Overlap_noS <- hypergeometric_directional(background_df=res_deseq_annot_full, sig_df=cog_sig_overlap, remove_S=TRUE)
+```
+
+```{r plot directional ora enrichment}
+cog_title_size = 9
+
+plot_cog_pathway_enrichment <- function(cog_pval_df, order = "none", title_tag = "enrichment") {
+  
+  print(paste("Order argument received:", order)) # Debugging line
+
+  # Check if order is either "none", "reverse", or other valid options
+  if (!order %in% c("none", "reverse")) {
+    stop("Invalid order argument. Please use 'none' or 'reverse'.")
+  }
+  
+  cog_enrichment_df <- cog_pval_df %>%
+    mutate(enrichment = if_else(representation == "Underrepresented", -enrichment, enrichment)) %>%
+    arrange(desc(abs(enrichment)))
+  
+  # Set factor levels based on ordering parameter
+  if (order == "reverse") {
+    levels = unique(cog_enrichment_df$COG_category)
+  } else {  # "none" or other cases
+    levels = rev(unique(cog_enrichment_df$COG_category))
+  }
+  
+  # Convert COG_category to a factor with specified levels
+  cog_enrichment_df$COG_category <- factor(cog_enrichment_df$COG_category, levels = levels)
+  
+  # Assuming cog_colors and cog_descriptions are predefined and available in your environment
+  if (!exists("cog_colors") || !exists("cog_descriptions")) {
+    stop("cog_colors or cog_descriptions not found in the environment")
+  }
+
+  # Create the ggplot
+  plot_pathway <- ggplot(cog_enrichment_df, aes(y = COG_category, x = enrichment, fill = COG_category)) +
+    geom_bar(stat = "identity", width = 0.7, color = "black") +
+    geom_vline(aes(xintercept = 0), color = "black", size = 0.07) +
+    geom_vline(xintercept = log10(0.05), color = "darkgrey", linetype = "dashed", size = 0.07) +
+    geom_vline(xintercept = -log10(0.05), color = "darkgrey", linetype = "dashed", size = 0.07) +
+
+    labs(title = paste("COG Enrichment: ", title_tag),
+         y = "COG Category",
+         x = "-log10(P value)") +
+    scale_fill_manual(values = cog_colors, 
+                      name = "COG Functional Family",
+                      labels = setNames(cog_descriptions$COG_functional_family,
+                                        cog_descriptions$COG_category)) +
+    theme_minimal() +
+    theme(legend.position = "right",
+          legend.key.size = unit(0.2, "cm")) +
+    egg::theme_article(base_size = cog_title_size)
+  
+  return(plot_pathway)
+}
+
+plot_enrich_DA <- grid.arrange(
+  plot_cog_pathway_enrichment(enrich_res_DA, order = "reverse", title_tag = "Hypergeometric P-value"), 
+  plot_cog_pathway_enrichment(enrich_res_DA, order = "none", title_tag = "Hypergeometric P-value"), 
+  ncol = 2
+)
+plot_enrich_DA_noS <- grid.arrange(
+  plot_cog_pathway_enrichment(enrich_res_DA_noS, order = "reverse", title_tag = "Hypergeometric P-value"), 
+  plot_cog_pathway_enrichment(enrich_res_DA_noS, order = "none", title_tag = "Hypergeometric P-value"), 
+  ncol = 2
+)
+plot_enrich_Overlap <- grid.arrange(
+  plot_cog_pathway_enrichment(enrich_res_Overlap, order = "reverse", title_tag = "Hypergeometric P-value"), 
+  plot_cog_pathway_enrichment(enrich_res_Overlap, order = "none", title_tag = "Hypergeometric P-value"), 
+  ncol = 2
+)
+plot_enrich_Overlap_noS <- grid.arrange(
+  plot_cog_pathway_enrichment(enrich_res_Overlap_noS, order = "reverse", title_tag = "Hypergeometric P-value"), 
+  plot_cog_pathway_enrichment(enrich_res_Overlap_noS, order = "none", title_tag = "Hypergeometric P-value"), 
+  ncol = 2
+)
+
+ggsave("./Output_figures_n_plots/supplementary_enrichment_DA.svg", plot = plot_enrich_DA, device = CairoSVG, width = 20, height = 4)
+ggsave("./Output_figures_n_plots/supplementary_enrichment_DA.pdf", plot = plot_enrich_DA, device = CairoPDF, width = 20, height = 4)
+ggsave("./Output_figures_n_plots/supplementary_enrichment_DA.png", plot = plot_enrich_DA, width = 20, height = 4, dpi = 400)
+
+# ggsave("./Output_figures_n_plots/supplementary_enrichment_DA_noS.svg", plot = plot_enrich_DA_noS, device = CairoSVG, width = 20, height = 4)
+# ggsave("./Output_figures_n_plots/supplementary_enrichment_DA_noS.pdf", plot = plot_enrich_DA_noS, device = CairoPDF, width = 20, height = 4)
+# ggsave("./Output_figures_n_plots/supplementary_enrichment_DA_noS.png", plot = plot_enrich_DA_noS, width = 20, height = 4, dpi = 400)
+
+ggsave("./Output_figures_n_plots/fig2.4_enrichment_Overlap.svg", plot = plot_enrich_Overlap, device = CairoSVG, width = 20, height = 4)
+ggsave("./Output_figures_n_plots/fig2.4_enrichment_Overlap.pdf", plot = plot_enrich_Overlap, device = CairoPDF, width = 20, height = 4)
+ggsave("./Output_figures_n_plots/fig2.4_enrichment_Overlap.png", plot = plot_enrich_Overlap, width = 20, height = 4, dpi = 400)
+
+# ggsave("./Output_figures_n_plots/fig2.4_enrichment_Overlap_noS.svg", plot = plot_enrich_Overlap_noS, device = CairoSVG, width = 20, height = 4)
+# ggsave("./Output_figures_n_plots/fig2.4_enrichment_Overlap_noS.pdf", plot = plot_enrich_Overlap_noS, device = CairoPDF, width = 20, height = 4)
+# ggsave("./Output_figures_n_plots/fig2.4_enrichment_Overlap_noS.png", plot = plot_enrich_Overlap_noS, width = 20, height = 4, dpi = 400)
+
+```
+For annotation: 
+http://pfam-legacy.xfam.org/family/PF02518
+https://www.ebi.ac.uk/interpro/entry/pfam/PF07660/
+
+Look up each domain in a database like PFAM or InterPro to understand its function.
+Cross-reference that function with literature or pathway databases like KEGG or Reactome to see if there's any mention of involvement in purinergic signaling.
+
+https://www.researchgate.net/figure/Pfam-domain-and-KEGG-enzyme-enrichment-analyses-of-DEGs-between-R-idaeus-Var-Amira_fig3_343558433
+https://www.researchgate.net/figure/Bubble-plot-showing-the-enrichment-for-GO-KEGG-pathway-and-Pfam-domain-of_fig2_335417714
+https://www.researchgate.net/figure/Enriched-protein-categories-and-Pfam-domains-A-Proteins-for-which-fragments-increased_fig6_263291958
+
+```{r COGs and PFAM}
+expand_PFAMs <- function(sig_DA_df) {
+  # Dataframe with gene to PFAM mapping (one to many) in rows, where duplicate relative counts are counted as 1/n(PFAM) per gene
+  cog_pfam_df <- sig_DA_df %>% 
+    mutate(relative_count = 1) %>% # initialize relative gene count as 1 for each gene
+    select(log2MeanGeTMM, stat, log2FoldChange, padj, COG_category, PFAMs, relative_count)
+
+  # Replace any NA values in the PFAMs column with "DUF"
+  cog_pfam_df$PFAMs[is.na(cog_pfam_df$PFAMs)] <- "DUF"
+
+  # 1. Add a column named "n_PFAMs"
+  cog_pfam_df$n_PFAMs <- sapply(str_count(cog_pfam_df$PFAMs, ","), `+`, 1)
+
+  # 2. Separate the PFAMs column into multiple rows
+  expanded_df <- cog_pfam_df %>%
+    tidyr::separate_rows(PFAMs, sep = ",") 
+
+  # If a row had more than one name in "PFAMs" column AND some of the names include "DUF", 
+  # only duplicate rows for names without "DUF", and then names including "DUF" should be removed.
+  expanded_df <- expanded_df %>%
+    group_by(log2MeanGeTMM, stat, log2FoldChange, padj, COG_category, relative_count, n_PFAMs) %>%
+    filter(!(n_PFAMs > 1 & str_detect(PFAMs, "DUF"))) %>%
+    ungroup()
+  
+  ## 1. Replace NAs in PFAMs with "DUF"
+  expanded_df$PFAMs[is.na(expanded_df$PFAMs)] <- "DUF"
+  ## 3. Replace names in PFAMs that start with "DUF" to just "DUF"
+  expanded_df$PFAMs <- ifelse(str_starts(expanded_df$PFAMs, "DUF"), "DUF", expanded_df$PFAMs)
+  
+  ## 2. Adjust the "relative_count" column
+  expanded_df$relative_count <- expanded_df$relative_count / expanded_df$n_PFAMs
+  
+  
+  
+  ## 4. Handle COG_category with more than one character
+  # Count the number of COG_Category assigned to each gene
+  expanded_df$n_COGs <- sapply(str_count(expanded_df$COG_category, ""), `+`)
+  
+  ## 5 duplicate COGs 
+  expanded_df <- expanded_df %>%
+    tidyr::unnest(COG_category = strsplit(as.character(COG_category), ""))%>%
+    mutate(relative_count = relative_count / n_COGs)
+  
+  ## 6 Remove rows with PFAMs == DUF
+  #expanded_df <- expanded_df[!grepl("DUF", expanded_df$PFAMs),]
+
+  return(expanded_df)
+}
+
+cog_pfam_df_deseq <- expand_PFAMs(cog_DA_deseq)
+cog_pfam_df_limma <- expand_PFAMs(cog_DA_limma)
+cog_pfam_df_overlap <- expand_PFAMs(cog_sig_overlap)
+unique(cog_pfam_df_overlap$PFAMs)
+```
+
+```{r PFAM ver 2}
+cog_colors <- c(
+  "M" = "#890000",
+  "K" = "#CC79A7",
+  "L" = "#673AB7",
+  "H" = "#000079",
+  "E" = "#008080",
+  "G" = "#006000",
+  "C" = "#76FF03", 
+  "T" = "#FFEB3B",
+  "P" = "#FF7000",
+  "U" = "#F15C80",
+  "J" = "#9C27B0", 
+  "I" = "#03A9F4", 
+  "V" = "#657D9B",
+  "O" = "#C5FA30",
+  "F" = "#FFB000",
+  "D" = "#D8BFD8", 
+  "Q" = "#795548",
+  "S" = "#9E9E9E",
+  "Joint COG" = "#ECECEC")
+
+# Function to process DataFrame
+process_dataframe <- function(df) {
+  df$representation <- ifelse(df$log2FoldChange > 0, "Overrepresented", "Underrepresented")
+  df$relative_count <- ifelse(df$representation == "Underrepresented", -df$relative_count, df$relative_count)
+  return(df)
+}
+
+# Function to calculate relative counts
+calc_relative_counts <- function(df) {
+  return(df %>%
+           group_by(COG_category, PFAMs, representation) %>%
+           summarise(relative_count = sum(relative_count), .groups = "drop"))
+}
+# Function to generate ordering for COG and PFAM
+generate_ordering <- function(relative_count_df) {
+  cog_ordering <- relative_count_df %>%
+    group_by(COG_category) %>%
+    summarise(total_abs_sum = sum(abs(relative_count)), .groups = "drop") %>%
+    arrange(-total_abs_sum) %>%  # Note the negative sign for descending order
+    pull(COG_category)
+  
+  pfam_ordering <- relative_count_df %>%
+    group_by(COG_category, PFAMs) %>%
+    summarise(total_abs_sum = sum(abs(relative_count)), .groups = "drop") %>%
+    arrange(COG_category, -total_abs_sum) %>%  # Note the negative sign for descending order within each COG_category
+    pull(PFAMs)
+  
+  unique_combinations <- relative_count_df %>%
+    select(COG_category, PFAMs) %>%
+    distinct()
+  
+  unique_combinations$combined <- paste(unique_combinations$COG_category, unique_combinations$PFAMs)
+  
+  ordering <- unique_combinations$combined[order(match(unique_combinations$COG_category, cog_ordering), 
+                                                 -match(unique_combinations$PFAMs, pfam_ordering))]
+  
+  reversed_ordering <- rev(ordering)
+  
+  return(list(cog_ordering = cog_ordering, pfam_ordering = pfam_ordering, reversed_ordering = reversed_ordering))
+}
+
+plot_relative_counts <- function(data, cog_pfam_title_size = 9) {
+    total <- sum(abs(data$relative_count))
+    plot <- ggplot(data, aes(y = combined_order, x = relative_count, fill = COG_category)) +
+        geom_bar(stat = "identity", width = 0.7, color = "black") +
+        geom_vline(aes(xintercept = 0), color = "black", size = 1) +
+        geom_text(aes(label = sprintf("%.2f%%", 100 * abs(relative_count) / total), 
+                      hjust = ifelse(relative_count < 0, 1.2, -0.2)), 
+                  size = 3,
+                  position = position_dodge(0.76)) +
+        labs(title = "Functional Profile based on COG Categories and PFAMs",
+             y = "COG Category and PFAM",
+             x = "Relative Gene Ratio (%)") +
+        scale_fill_manual(values = cog_colors, 
+                          name = "COG Functional Family") +
+        scale_x_continuous(limits = c(-2.3, 6.5)) +
+        scale_y_discrete(labels = function(x) substr(x, 3, nchar(x))) +
+        theme_minimal() +
+        theme(legend.position = "right",
+              legend.key.size = unit(0.2, "cm")) +
+        egg::theme_article(base_size = cog_pfam_title_size) +
+        annotate("text", x = max(data$relative_count) * 0.9, y = length(unique(data$combined_order)) + 1,
+                 label = paste("Genes with COG and PFAM annotation:", round(total)), hjust = "right",
+                 size = 2.5)
+    return(plot)
+}
+
+# Main function
+generate_plots <- function(input_dataframe, cog_pfam_title_size = 9, split=FALSE, split_n=NA) {
+  processed_df <- process_dataframe(input_dataframe)
+  relative_count_df <- calc_relative_counts(processed_df)
+  ordering <- generate_ordering(relative_count_df)
+  
+  relative_count_df$combined_order <- factor(paste(relative_count_df$COG_category, relative_count_df$PFAMs), 
+                                             levels = ordering$reversed_ordering)
+  
+  if(split==TRUE){
+    left_plot <- relative_count_df[relative_count_df$COG_category %in% ordering$cog_ordering[1:split_n], ]
+    right_plot <- relative_count_df[!relative_count_df$COG_category %in% ordering$cog_ordering[1:split_n], ]
+    
+    first_plot <- plot_relative_counts(left_plot)
+    second_plot <- plot_relative_counts(right_plot)
+    
+    COG_PFAM_plot <- grid.arrange(first_plot, second_plot, ncol=2)
+  }else{
+    plot <- relative_count_df[relative_count_df$COG_category %in% ordering$cog_ordering, ]
+    COG_PFAM_plot <- plot_relative_counts(plot)
+  }
+  return(COG_PFAM_plot)
+}
+
+# Usage
+COG_PFAM_overlap_split <- generate_plots(cog_pfam_df_overlap, split = TRUE, split_n = 4)
+
+ggsave("./Output_figures_n_plots/fig3.1_COG_PFAM_overlap_split.svg", plot=COG_PFAM_overlap_split, device=CairoSVG, width = 20, height = 11.3)
+ggsave("./Output_figures_n_plots/fig3.1_COG_PFAM_overlap_split.pdf", plot=COG_PFAM_overlap_split, device=CairoPDF, width = 20, height = 11.3)
+ggsave("./Output_figures_n_plots/fig3.1_COG_PFAM_overlap_split.png", plot=COG_PFAM_overlap_split, width = 20, height = 11.3, dpi=400)
+
+COG_PFAM_plot_overlap <- generate_plots(cog_pfam_df_overlap)
+
+ggsave("./Output_figures_n_plots/fig3_COG_PFAM_overlap_split.svg", plot=COG_PFAM_plot_overlap, device=CairoSVG, width = 11, height = 24.3)
+ggsave("./Output_figures_n_plots/fig3_COG_PFAM_overlap_split.pdf", plot=COG_PFAM_plot_overlap, device=CairoPDF, width = 11, height = 24.3)
+ggsave("./Output_figures_n_plots/fig3_COG_PFAM_overlap_split.png", plot=COG_PFAM_plot_overlap, width = 11, height = 24.3, dpi=400)
+```
+
+```{r all-in-one function}
+
+COG_colors_multiple_cat <- c(
+  "M" = "#890000",
+  "K" = "#CC79A7",
+  "L" = "#673AB7",
+  "H" = "#000079",
+  "E" = "#008080",
+  "G" = "#006000",
+  "C" = "#76FF03", 
+  "T" = "#FFEB3B",
+  "P" = "#FF7000",
+  "U" = "#F15C80",
+  "J" = "#9C27B0", 
+  "I" = "#03A9F4", 
+  "V" = "#657D9B",
+  "O" = "#C5FA30",
+  "F" = "#FFB000",
+  "D" = "#D8BFD8", 
+  "Q" = "#795548",
+  "S" = "#9E9E9E",
+  "Joint COG" = "#ECECEC"
+  )
+
+circular_genome_plot_function <- function(df, includegroup, radius, imgname, width, height, save, legend_lab, COG) {
+  
+  df <- df %>% mutate(mean_p1_sim = rowMeans(select(., p1_sim1, p1_sim2, p1_sim3))) %>% # calculating mean(log2(GeTMM)) for simulated P1 counts
+    mutate(mean_wt_sim = rowMeans(select(., wt_sim1, wt_sim2, wt_sim3))) %>% # calculating mean(log2(GeTMM)) for simulated P1 counts
+    select(,c("p1","wt","mean_p1_sim", "mean_wt_sim", "log2FoldChange", 
+              "stat", "padj", "start", "end", "gene_length", "strand", 
+              "product","COG_category", "Description", "Preferred_name")) %>% 
+    mutate(line = NA) %>% 
+    mutate(COG_category = replace_na(COG_category, "S")) %>% 
+    mutate(
+      COG_category = 
+        ifelse(
+          nchar(COG_category) > 1, 
+          "Joint COG", 
+          COG_category
+        )) %>%
+    mutate(
+      log2FoldChange = 
+        ifelse(
+          padj > 0.05, 0,
+          log2FoldChange
+        )) %>% 
+    mutate(
+      log2FoldChange =
+        ifelse(
+            log2FoldChange < -2.5, 
+            -2.5, 
+            ifelse(
+              log2FoldChange > 2.5, 
+              2.5, 
+              log2FoldChange
+            )))%>%
+#    mutate(
+#      pval_sig = 
+#        ifelse(
+#          padj < 0.05, "*",
+#          NA
+#        )) %>%
+    mutate(
+      pval_sig = 
+        ifelse(
+          padj < 0.01, "**",
+          NA
+        )) %>%
+    mutate(
+      pval_sig = 
+        ifelse(
+          padj < 0.001, "***",
+          pval_sig
+        ))
+  
+  calculate_angle_known_gene <- function(df) {
+    df_calculate <- df
+    rows_before <- data.frame(matrix(ncol = ncol(df_calculate), nrow = as.integer(nrow(df)*0.025)))
+    colnames(rows_before) <- colnames(df_calculate)
+    rows_after <- data.frame(matrix(ncol = ncol(df_calculate), nrow = as.integer(nrow(df)*0.025)))
+    colnames(rows_after) <- colnames(df_calculate)
+    df_calculate <- rbind(rows_before, df_calculate, rows_after)
+    df_calculate$index <- 1:nrow(df_calculate) 
+    df_calculate <- mutate(df_calculate, angle = 90 - 360 * (index - min(index)) / (max(index) - min(index)))
+    return(df_calculate)
+  }
+  
+  circular_df <- calculate_angle_known_gene(df)
+  circular_df <- calculate_angle_known_gene(circular_df) %>% 
+    mutate(start_position = case_when(index == 1 ~ radius, TRUE ~ 0)) %>% 
+    rowwise() %>% mutate(max_value = max(c_across(includegroup))) %>% 
+    pivot_longer(cols = c(includegroup,start_position)) %>% 
+    mutate(value = value) %>% 
+    mutate(gene_sig_pos = ifelse(name == "p1_sig" & value ==12, gene, NA)) %>% 
+    mutate(gene_sig_neg = ifelse(name == "p1_sig" & value ==0, gene, NA)) %>% 
+    filter(!is.na(value))
+
+  circular_genome_lfc <- function(circular_df, imgname, width, height, save, legend_lab) {
+    circular_df$COG_category <- as.factor(circular_df$COG_category)
+
+    plot_gg <- 
+      circular_df %>% 
+      ggplot() +
+    
+      # Experimental (EV) heatmaps
+      geom_rect(data = subset(circular_df, name == "p1"), aes(xmin = index, xmax = (index+0.98), 
+                                                                    ymin = -4.5, ymax = -2.5, fill = value), 
+                color = alpha("#8B005B", 0), 
+                size = 0.00) +
+      geom_rect(data = subset(circular_df, name == "wt"), aes(xmin = index, xmax = (index+0.98), 
+                                                                   ymin = -6.5, ymax = -4.5, fill = value), 
+                color = alpha("#007D75", 0),
+                size = 0.00) +
+    
+      # adding white line between exp and sim
+      geom_rect(data = subset(circular_df, name == "line"), aes(xmin = index, xmax = (index+0.98), 
+                                                                   ymin = -7, ymax = -6.5, fill = value), 
+                alpha = 0.00, 
+                color = alpha("white", 0),
+                size = 0.00) +
+    
+      # Simulated (ASF519) heatmaps 
+      geom_rect(data = subset(circular_df, name == "mean_p1_sim"), aes(xmin = index, xmax = (index+0.98), 
+                                                              ymin = -9, ymax = -7, fill = value), 
+                color = alpha("#FF80E0", 0),
+                size = 0.00) +
+
+      geom_rect(data = subset(circular_df, name == "mean_wt_sim"), aes(xmin = index, xmax = (index+0.98), 
+                                                              ymin = -11, ymax = -9, fill = value), 
+                color = alpha("#66FFFF", 0),
+                size = 0.00) +
+      # adding white line between p1 and p1_sim groups
+      geom_rect(data = subset(circular_df, name == "line"), aes(xmin = index, xmax = (index+0.98), 
+                                                              ymin = -14, ymax = -11, fill = value), 
+                color = alpha("white", 0),
+                size = 0.00) +
+      geom_rect(data = subset(circular_df, name == "start_position"), aes(xmin = index, xmax = (index+0.98), 
+                                                                          ymin = -30, ymax = -14),
+                alpha = 0,
+                color = "white",
+                size = 0.00) +
+      scale_fill_gradientn(colors = c("darkblue", "white", "darkred"))+
+    
+      geom_text(x=0, y=0.5, label="log2fold Change", size = 2) +
+      geom_text(x=0, y=-0.5, label="(p.adj < 0.05)", size = 2) +
+      geom_text(x=0, y=-3.5, label="p1: EV", size = 2) +
+      geom_text(x=0, y=-5.5, label="wt: EV", size = 2) +
+      geom_text(x=0, y=-8, label="mean(p1_sim): ASF519", size = 2) +
+      geom_text(x=0, y=-10, label="mean(wt_sim): ASF519", size = 2) +
+    
+      # Adding Log2fold change plot
+      geom_rect(data = circular_df, 
+             aes(xmin = index, 
+                 xmax = index + 0.98, 
+                 ymin = 0, 
+                 ymax = log2FoldChange)) +
+      theme_minimal() +
+      egg::theme_article() +
+      theme(axis.text.y = element_blank(),  # Remove y-axis text
+            axis.ticks.y = element_blank()) +  # Remove y-axis ticks)
+          
+      # Make plot circular
+      coord_polar() +
+        
+      # Add labels
+      labs(fill = legend_lab,
+           title="Heatmap: log2(GeTMM) ordered by Genomic Location", 
+           x=" ", y=" ", tag = " ") +
+      # labeling the gene order within genome
+      scale_x_continuous(breaks = seq(-250, 4700, 250))
+    # Save plot using cairo
+    if(save == TRUE){
+    ggsave(plot_gg, file=imgname, width=width, height=height, bg = "transparent", device=cairo_pdf())
+    plot_gg
+    dev.off()
+    }
+    if(save == FALSE){
+    plot_gg 
+    }
+  }
+
+  circular_genome_lfc_COG <- function(circular_df, imgname, width, height, save, legend_lab) {
+    circular_df$COG_category <- as.factor(circular_df$COG_category)
+
+    plot_gg <- 
+      circular_df %>% 
+      ggplot() +
+    
+      # Experimental (EV) heatmaps
+      geom_rect(data = subset(circular_df, name == "p1"), aes(xmin = index, xmax = (index+0.98), 
+                                                                  ymin = -4.5, ymax = -2.5),
+              alpha = 0.00, 
+              color = alpha("white", 0),
+              size = 0.00) +
+      geom_rect(data = subset(circular_df, name == "wt"), aes(xmin = index, xmax = (index+0.98), 
+                                                                 ymin = -6.5, ymax = -4.5),
+              alpha = 0.00, 
+              color = alpha("white", 0),
+              size = 0.00) +
+    
+      # adding white line between exp and sim
+      geom_rect(data = subset(circular_df, name == "line"), aes(xmin = index, xmax = (index+0.98), 
+                                                                 ymin = -7, ymax = -6.5),
+              alpha = 0.00, 
+              color = alpha("white", 0),
+              size = 0.00) +
+    
+      # Simulated (ASF519) heatmaps 
+      geom_rect(data = subset(circular_df, name == "mean_p1_sim"), aes(xmin = index, xmax = (index+0.98), 
+                                                            ymin = -9, ymax = -7),
+              alpha = 0.00, 
+              color = alpha("white", 0),
+              size = 0.00) +
+
+      geom_rect(data = subset(circular_df, name == "mean_wt_sim"), aes(xmin = index, xmax = (index+0.98), 
+                                                            ymin = -11, ymax = -9),
+              alpha = 0.00, 
+              color = alpha("white", 0),
+              size = 0.00) +
+      # adding white line between p1 and p1_sim groups
+      geom_rect(data = subset(circular_df, name == "line"), aes(xmin = index, xmax = (index+0.98), 
+                                                            ymin = -14, ymax = -11),
+              color = alpha("white", 0),
+              size = 0.00) +
+      geom_rect(data = subset(circular_df, name == "start_position"), aes(xmin = index, xmax = (index+0.98), 
+                                                                        ymin = -30, ymax = -14),
+              alpha = 0,
+              color = "white",
+              size = 0.00) +
+      geom_text(aes(x = index+0.49, y = 2.5, label = pval_sig, angle = angle),color="black", size = 0.2, alpha=0.3, family = "Times",fontface = "bold", hjust = 0) +
+    
+      geom_text(x=0, y=0.5, label="log2fold Change", size = 2) +
+    
+      # Adding Log2fold change plot
+      geom_rect(data = circular_df, 
+           aes(xmin = index, 
+               xmax = index + 0.98, 
+               ymin = 0, 
+               ymax = log2FoldChange,
+               fill = COG_category)) +
+      scale_fill_manual(values = COG_colors_multiple_cat) +
+    
+      theme_minimal() +
+      egg::theme_article() +
+      theme(axis.text.y = element_blank(),  # Remove y-axis text
+            axis.ticks.y = element_blank()) +  # Remove y-axis ticks)
+          
+      # Make plot circular
+      coord_polar() +
+      
+      # Add labels
+      labs(fill = legend_lab,
+           title="Heatmap: log2(GeTMM) ordered by Genomic Location", 
+           x=" ", y=" ", tag = " ") +
+      # labeling the gene order within genome
+      scale_x_continuous(breaks = seq(-250, 4700, 250))
+    # Save plot using cairo
+    if(save == TRUE){
+    ggsave(plot_gg, file=imgname, width=width, height=height, bg = "transparent", device=cairo_pdf())
+    plot_gg
+    dev.off()
+    }
+    if(save == FALSE){
+    plot_gg 
+    }
+  }
+  return(circular_df)
+  if (COG) {
+    circular_genome_lfc_COG(circular_df, imgname, width, height, save, legend_lab)
+  } else {
+    circular_genome_lfc(circular_df, imgname, width, height, save, legend_lab)
+  }
+}
+
+# Usage:
+operon_lfc_df <- circular_genome_plot_function(df = log2getmm_deseq_full, includegroup = c("p1","wt","line","mean_p1_sim", "mean_wt_sim"), radius = 50, imgname = "/path/to/save/image.pdf", width = 9, height = 9, save = FALSE, legend_lab = "log2(GeTMM)", COG = TRUE)
+#circular_genome_plot_function(df = log2getmm_deseq_full, includegroup = c("p1","wt","line","mean_p1_sim", "mean_wt_sim"), radius = 50, imgname = "/path/to/save/image.pdf", width = 9, height = 9, save = FALSE, legend_lab = "log2(GeTMM)", COG = FALSE)
+
+circular_genome_plot_function(df = log2getmm_deseq_full, includegroup = c("p1","wt","line","mean_p1_sim", "mean_wt_sim"), radius = 50, imgname = "./Output_figures_n_plots/Circular_heatmap_COG.pdf", width = 9, height = 9, save = TRUE, legend_lab = "log2(GeTMM)", COG = TRUE)
+circular_genome_plot_function(df = log2getmm_deseq_full, includegroup = c("p1","wt","line","mean_p1_sim", "mean_wt_sim"), radius = 50, imgname = "./Output_figures_n_plots/Circular_heatmap_noCOG.pdf", width = 9, height = 9, save = TRUE, legend_lab = "log2(GeTMM)", COG = FALSE)
+
+circular_genome_plot_function(df = log2getmm_deseq_full, includegroup = c("p1","wt","line","mean_p1_sim", "mean_wt_sim"), radius = 50, imgname = "./Output_figures_n_plots/Circular_heatmap_COG.png", width = 9, height = 9, save = TRUE, legend_lab = "log2(GeTMM)", COG = TRUE)
+circular_genome_plot_function(df = log2getmm_deseq_full, includegroup = c("p1","wt","line","mean_p1_sim", "mean_wt_sim"), radius = 50, imgname = "./Output_figures_n_plots/Circular_heatmap_noCOG.png", width = 9, height = 9, save = TRUE, legend_lab = "log2(GeTMM)", COG = FALSE)
+
+```
+
+
+```{txt circular genome heatmap version1}
+
+COG_colors_multiple_cat <- c(
+  "M" = "#890000",
+  "K" = "#CC79A7",
+  "L" = "#673AB7",
+  "H" = "#000079",
+  "E" = "#008080",
+  "G" = "#006000",
+  "C" = "#76FF03", 
+  "T" = "#FFEB3B",
+  "P" = "#FF7000",
+  "U" = "#F15C80",
+  "J" = "#9C27B0", 
+  "I" = "#03A9F4", 
+  "V" = "#657D9B",
+  "O" = "#C5FA30",
+  "F" = "#FFB000",
+  "D" = "#D8BFD8", 
+  "Q" = "#795548",
+  "S" = "#9E9E9E",
+  "Joint COG" = "#ECECEC"
+  )
+
+circular_genome_plot_function_v2 <- function(df, includegroup, radius, imgname, width, height, save, legend_lab, COG) {
+  
+  df <- df %>% mutate(mean_p1_sim = rowMeans(select(., p1_sim1, p1_sim2, p1_sim3))) %>% # calculating mean(log2(GeTMM)) for simulated P1 counts
+    mutate(mean_wt_sim = rowMeans(select(., wt_sim1, wt_sim2, wt_sim3))) %>% # calculating mean(log2(GeTMM)) for simulated P1 counts
+    select(,c("p1","wt","mean_p1_sim", "mean_wt_sim", "log2FoldChange", 
+              "stat", "padj", "start", "end", "gene_length", "strand", 
+              "product","COG_category", "Description", "Preferred_name")) %>% 
+    mutate(line = NA) %>% 
+    mutate(COG_category = replace_na(COG_category, "S")) %>% 
+    mutate(
+      COG_category = 
+        ifelse(
+          nchar(COG_category) > 1, 
+          "Joint COG", 
+          COG_category
+        )) %>%
+    mutate(
+      log2FoldChange = 
+        ifelse(
+          padj > 0.05, 0,
+          log2FoldChange
+        )) %>% 
+    mutate(
+      log2FoldChange =
+        ifelse(
+            log2FoldChange < -2.5, 
+            -2.5, 
+            ifelse(
+              log2FoldChange > 2.5, 
+              2.5, 
+              log2FoldChange
+            )))%>%
+#    mutate(
+#      pval_sig = 
+#        ifelse(
+#          padj < 0.05, "*",
+#          NA
+#        )) %>%
+    mutate(
+      pval_sig = 
+        ifelse(
+          padj < 0.01, "**",
+          NA
+        )) %>%
+    mutate(
+      pval_sig = 
+        ifelse(
+          padj < 0.001, "***",
+          pval_sig
+        ))
+  
+  calculate_angle_known_gene <- function(df) {
+    df_calculate <- df
+    rows_before <- data.frame(matrix(ncol = ncol(df_calculate), nrow = as.integer(nrow(df)*0.025)))
+    colnames(rows_before) <- colnames(df_calculate)
+    rows_after <- data.frame(matrix(ncol = ncol(df_calculate), nrow = as.integer(nrow(df)*0.025)))
+    colnames(rows_after) <- colnames(df_calculate)
+    df_calculate <- rbind(rows_before, df_calculate, rows_after)
+    df_calculate$index <- 1:nrow(df_calculate) 
+    df_calculate <- mutate(df_calculate, angle = 90 - 360 * (index - min(index)) / (max(index) - min(index)))
+    return(df_calculate)
+  }
+  
+  circular_df <- calculate_angle_known_gene(df)
+  circular_df <- calculate_angle_known_gene(circular_df) %>% 
+    mutate(start_position = case_when(index == 1 ~ radius, TRUE ~ 0)) %>% 
+    rowwise() %>% mutate(max_value = max(c_across(includegroup))) %>% 
+    pivot_longer(cols = c(includegroup,start_position)) %>% 
+    mutate(value = value) %>% 
+    mutate(gene_sig_pos = ifelse(name == "p1_sig" & value ==12, gene, NA)) %>% 
+    mutate(gene_sig_neg = ifelse(name == "p1_sig" & value ==0, gene, NA)) %>% 
+    filter(!is.na(value))
+
+  circular_genome_lfc <- function(circular_df, imgname, width, height, save, legend_lab) {
+    circular_df$COG_category <- as.factor(circular_df$COG_category)
+
+    plot_gg <- 
+      circular_df %>% 
+      ggplot() +
+    
+      # Experimental (EV) heatmaps
+      geom_rect(data = subset(circular_df, name == "p1"), aes(xmin = index, xmax = (index+0.98), 
+                                                                    ymin = -9.5+2.5, ymax = -7.5+2.5, fill = value), 
+                color = alpha("#8B005B", 0), 
+                size = 0.00) +
+      geom_rect(data = subset(circular_df, name == "wt"), aes(xmin = index, xmax = (index+0.98), 
+                                                                   ymin = -11.5+2.5, ymax = -9.5+2.5, fill = value), 
+                color = alpha("#007D75", 0),
+                size = 0.00) +
+    
+      # adding white line between exp and sim
+      geom_rect(data = subset(circular_df, name == "line"), aes(xmin = index, xmax = (index+0.98), 
+                                                                   ymin = -12+2.5, ymax = -11.5+2.5, fill = value), 
+                alpha = 0.00, 
+                color = alpha("white", 0),
+                size = 0.00) +
+    
+      # Simulated (ASF519) heatmaps 
+      geom_rect(data = subset(circular_df, name == "mean_p1_sim"), aes(xmin = index, xmax = (index+0.98), 
+                                                              ymin = -14+2.5, ymax = -12+2.5, fill = value), 
+                color = alpha("#FF80E0", 0),
+                size = 0.00) +
+
+      geom_rect(data = subset(circular_df, name == "mean_wt_sim"), aes(xmin = index, xmax = (index+0.98), 
+                                                              ymin = -16+2.5, ymax = -14+2.5, fill = value), 
+                color = alpha("#66FFFF", 0),
+                size = 0.00) +
+      # adding white line between p1 and p1_sim groups
+      geom_rect(data = subset(circular_df, name == "line"), aes(xmin = index, xmax = (index+0.98), 
+                                                              ymin = -19+2.5, ymax = -16+2.5, fill = value), 
+                color = alpha("white", 0),
+                size = 0.00) +
+      geom_rect(data = subset(circular_df, name == "start_position"), aes(xmin = index, xmax = (index+0.98), 
+                                                                          ymin = -30, ymax = -19+2.5),
+                alpha = 0,
+                color = "white",
+                size = 0.00) +
+      scale_fill_gradientn(colors = c("darkblue", "white", "darkred"))+
+      geom_text(aes(x = index+0.49, y = -11.85+2.5, label = pval_sig, angle = angle),color="black", size = 0.2, alpha=0.3, family = "Times",fontface = "bold", hjust = 0) +
+    
+    
+      geom_text(x=0, y=0.5+2.5, label="log2fold Change", size = 2) +
+      geom_text(x=0, y=-0.5+2.5, label="(p.adj < 0.05)", size = 2) +
+      geom_text(x=0, y=-8.5+2.5, label="P1: EV", size = 2) +
+      geom_text(x=0, y=-10.5+2.5, label="WT: EV", size = 2) +
+      geom_text(x=0, y=-13+2.5, label="mean(p1_sim): ASF519", size = 2) +
+      geom_text(x=0, y=-15+2.5, label="mean(wt_sim): ASF519", size = 2) +
+    
+      # Adding Log2fold change plot
+      geom_rect(data = circular_df, 
+             aes(xmin = index, 
+                 xmax = index + 0.98, 
+                 ymin = 0, 
+                 ymax = log2FoldChange*2)) +
+      theme_minimal() +
+      egg::theme_article() +
+      theme(axis.text.y = element_blank(),  # Remove y-axis text
+            axis.ticks.y = element_blank(),  # Remove y-axis ticks
+            axis.text.x = element_blank(),  # Remove x-axis text'
+            axis.ticks.x = element_blank()) +  # Remove x-axis ticks
+
+      # Make plot circular
+      coord_polar() +
+        
+      # Add labels
+      labs(fill = legend_lab,
+           title="Heatmap: log2(GeTMM) ordered by Genomic Location", 
+           x=" ", y=" ", tag = " ") +
+      # labeling the gene order within genome
+      scale_x_continuous(breaks = seq(-250, 4700, 250))
+    # Save plot using cairo
+    if(save == TRUE){
+    ggsave(plot_gg, file=imgname, width=width, height=height, bg = "transparent", device=cairo_pdf())
+    plot_gg
+    dev.off()
+    }
+    if(save == FALSE){
+    plot_gg 
+    }
+  }
+
+  circular_genome_lfc_COG <- function(circular_df, imgname, width, height, save, legend_lab) {
+    circular_df$COG_category <- as.factor(circular_df$COG_category)
+
+    plot_gg <- 
+      circular_df %>% 
+      ggplot() +
+    
+      # Experimental (EV) heatmaps
+      geom_rect(data = subset(circular_df, name == "p1"), aes(xmin = index, xmax = (index+0.98), 
+                                                                  ymin = -9.5+2.5, ymax = -7.5+2.5),
+              alpha = 0.00, 
+              color = alpha("white", 0),
+              size = 0.00) +
+      geom_rect(data = subset(circular_df, name == "wt"), aes(xmin = index, xmax = (index+0.98), 
+                                                                 ymin = -11.5+2.5, ymax = -9.5+2.5),
+              alpha = 0.00, 
+              color = alpha("white", 0),
+              size = 0.00) +
+    
+      # adding white line between exp and sim
+      geom_rect(data = subset(circular_df, name == "line"), aes(xmin = index, xmax = (index+0.98), 
+                                                                 ymin = -12+2.5, ymax = -11.5+2.5),
+              alpha = 0.00, 
+              color = alpha("white", 0),
+              size = 0.00) +
+    
+      # Simulated (ASF519) heatmaps 
+      geom_rect(data = subset(circular_df, name == "mean_p1_sim"), aes(xmin = index, xmax = (index+0.98), 
+                                                            ymin = -14+2.5, ymax = -12+2.5),
+              alpha = 0.00, 
+              color = alpha("white", 0),
+              size = 0.00) +
+
+      geom_rect(data = subset(circular_df, name == "mean_wt_sim"), aes(xmin = index, xmax = (index+0.98), 
+                                                            ymin = -16+2.5, ymax = -14+2.5),
+              alpha = 0.00, 
+              color = alpha("white", 0),
+              size = 0.00) +
+      # adding white line between p1 and p1_sim groups
+      geom_rect(data = subset(circular_df, name == "line"), aes(xmin = index, xmax = (index+0.98), 
+                                                            ymin = -19+2.5, ymax = -16+2.5),
+              color = alpha("white", 0),
+              size = 0.00) +
+      geom_rect(data = subset(circular_df, name == "start_position"), aes(xmin = index, xmax = (index+0.98), 
+                                                                        ymin = -30, ymax = -19+2.5),
+              alpha = 0,
+              color = "white",
+              size = 0.00) +
+      geom_text(aes(x = index+0.49, y = -11.85+2.5, label = pval_sig, angle = angle),color="black", size = 0.2, alpha=0.3, family = "Times",fontface = "bold", hjust = 0) +
+    
+      geom_text(x=0, y=0.5, label="log2fold Change", size = 2) +
+    
+      # Adding Log2fold change plot
+      geom_rect(data = circular_df, 
+           aes(xmin = index, 
+               xmax = index + 0.98, 
+               ymin = 0, 
+               ymax = log2FoldChange*2,
+               fill = COG_category)) +
+      scale_fill_manual(values = COG_colors_multiple_cat) +
+    
+      theme_minimal() +
+      egg::theme_article() +
+      theme(axis.text.y = element_blank(),  # Remove y-axis text
+            axis.ticks.y = element_blank(),  # Remove y-axis ticks
+            axis.text.x = element_blank(),  # Remove x-axis text'
+            axis.ticks.x = element_blank()) +  # Remove x-axis ticks
+          
+      # Make plot circular
+      coord_polar() +
+      
+      # Add labels
+      labs(fill = legend_lab,
+           title="Heatmap: log2(GeTMM) ordered by Genomic Location", 
+           x=" ", y=" ", tag = " ") +
+      # labeling the gene order within genome
+      scale_x_continuous(breaks = seq(-250, 4700, 250))
+    # Save plot using cairo
+    if(save == TRUE){
+    ggsave(plot_gg, file=imgname, width=width, height=height, bg = "transparent", device=cairo_pdf())
+    plot_gg
+    dev.off()
+    }
+    if(save == FALSE){
+    plot_gg 
+    }
+  }
+
+  if (COG) {
+    circular_genome_lfc_COG(circular_df, imgname, width, height, save, legend_lab)
+  } else {
+    circular_genome_lfc(circular_df, imgname, width, height, save, legend_lab)
+  }
+}
+
+# Usage:
+#circular_genome_plot_function_v2(df = log2getmm_deseq_full, includegroup = c("p1","wt","line","mean_p1_sim", "mean_wt_sim"), radius = 50, imgname = "/path/to/save/image.pdf", width = 9, height = 9, save = FALSE, legend_lab = "log2(GeTMM)", COG = TRUE)
+#circular_genome_plot_function_v2(df = log2getmm_deseq_full, includegroup = c("p1","wt","line","mean_p1_sim", "mean_wt_sim"), radius = 50, imgname = "/path/to/save/image.pdf", width = 9, height = 9, save = FALSE, legend_lab = "log2(GeTMM)", COG = FALSE)
+
+circular_genome_plot_function_v2(df = log2getmm_deseq_full, includegroup = c("p1","wt","line","mean_p1_sim", "mean_wt_sim"), radius = 50, imgname = "./Output_figures_n_plots/Circular_heatmap_COG_v2.pdf", width = 9, height = 9, save = TRUE, legend_lab = "log2(GeTMM)", COG = TRUE)
+circular_genome_plot_function_v2(df = log2getmm_deseq_full, includegroup = c("p1","wt","line","mean_p1_sim", "mean_wt_sim"), radius = 50, imgname = "./Output_figures_n_plots/Circular_heatmap_noCOG_v2.pdf", width = 9, height = 9, save = TRUE, legend_lab = "log2(GeTMM)", COG = FALSE)
+
+circular_genome_plot_function_v2(df = log2getmm_deseq_full, includegroup = c("p1","wt","line","mean_p1_sim", "mean_wt_sim"), radius = 50, imgname = "./Output_figures_n_plots/Circular_heatmap_COG_v2.png", width = 9, height = 9, save = TRUE, legend_lab = "log2(GeTMM)", COG = TRUE)
+circular_genome_plot_function_v2(df = log2getmm_deseq_full, includegroup = c("p1","wt","line","mean_p1_sim", "mean_wt_sim"), radius = 50, imgname = "./Output_figures_n_plots/Circular_heatmap_noCOG_v2.png", width = 9, height = 9, save = TRUE, legend_lab = "log2(GeTMM)", COG = FALSE)
+
+```
+
+
+```{r circular genome heatmap manusciript version}
+
+COG_colors_multiple_cat <- c(
+  "M" = "#890000",
+  "K" = "#CC79A7",
+  "L" = "#673AB7",
+  "H" = "#000079",
+  "E" = "#008080",
+  "G" = "#006000",
+  "C" = "#76FF03", 
+  "T" = "#FFEB3B",
+  "P" = "#FF7000",
+  "U" = "#F15C80",
+  "J" = "#9C27B0", 
+  "I" = "#03A9F4", 
+  "V" = "#657D9B",
+  "O" = "#C5FA30",
+  "F" = "#FFB000",
+  "D" = "#D8BFD8", 
+  "Q" = "#795548",
+  "S" = "#9E9E9E",
+  "Joint COG" = "#ECECEC"
+  )
+
+circular_genome_plot_function_v3 <- function(df, includegroup, radius, imgname, width, height, save, legend_lab, COG) {
+  
+  df <- df %>% mutate(mean_p1_sim = rowMeans(select(., p1_sim1, p1_sim2, p1_sim3))) %>% # calculating mean(log2(GeTMM)) for simulated P1 counts
+    mutate(mean_wt_sim = rowMeans(select(., wt_sim1, wt_sim2, wt_sim3))) %>% # calculating mean(log2(GeTMM)) for simulated P1 counts
+    select(,c("p1","wt","mean_p1_sim", "mean_wt_sim", "log2FoldChange", 
+              "stat", "padj", "start", "end", "gene_length", "strand", 
+              "product","COG_category", "Description", "Preferred_name")) %>% 
+    mutate(line = NA) %>% 
+    mutate(COG_category = replace_na(COG_category, "S")) %>% 
+    mutate(
+      COG_category = 
+        ifelse(
+          nchar(COG_category) > 1, 
+          "Joint COG", 
+          COG_category
+        )) %>%
+    mutate(
+      log2FoldChange = 
+        ifelse(
+          padj > 0.05, 0,
+          log2FoldChange
+        )) %>% 
+    mutate(
+      log2FoldChange =
+        ifelse(
+            log2FoldChange < -2.5, 
+            -2.5, 
+            ifelse(
+              log2FoldChange > 2.5, 
+              2.5, 
+              log2FoldChange
+            )))%>%
+#    mutate(
+#      pval_sig = 
+#        ifelse(
+#          padj < 0.05, "*",
+#          NA
+#        )) %>%
+    mutate(
+      pval_sig = 
+        ifelse(
+          padj < 0.01, "**",
+          NA
+        )) %>%
+    mutate(
+      pval_sig = 
+        ifelse(
+          padj < 0.001, "***",
+          pval_sig
+        ))
+  
+  calculate_angle_known_gene <- function(df) {
+    df_calculate <- df
+    rows_before <- data.frame(matrix(ncol = ncol(df_calculate), nrow = as.integer(nrow(df)*0.025)))
+    colnames(rows_before) <- colnames(df_calculate)
+    rows_after <- data.frame(matrix(ncol = ncol(df_calculate), nrow = as.integer(nrow(df)*0.025)))
+    colnames(rows_after) <- colnames(df_calculate)
+    df_calculate <- rbind(rows_before, df_calculate, rows_after)
+    df_calculate$index <- 1:nrow(df_calculate) 
+    df_calculate <- mutate(df_calculate, angle = 90 - 360 * (index - min(index)) / (max(index) - min(index)))
+    return(df_calculate)
+  }
+  
+  circular_df <- calculate_angle_known_gene(df)
+  circular_df <- calculate_angle_known_gene(circular_df) %>% 
+    mutate(start_position = case_when(index == 1 ~ radius, TRUE ~ 0)) %>% 
+    rowwise() %>% mutate(max_value = max(c_across(includegroup))) %>% 
+    pivot_longer(cols = c(includegroup,start_position)) %>% 
+    mutate(value = value) %>% 
+    mutate(gene_sig_pos = ifelse(name == "p1_sig" & value ==12, gene, NA)) %>% 
+    mutate(gene_sig_neg = ifelse(name == "p1_sig" & value ==0, gene, NA)) %>% 
+    filter(!is.na(value))
+
+  circular_genome_lfc <- function(circular_df, imgname, width, height, save, legend_lab) {
+    circular_df$COG_category <- as.factor(circular_df$COG_category)
+
+    plot_gg <- 
+      circular_df %>% 
+      ggplot() +
+    
+      # Experimental (EV) heatmaps
+      geom_rect(data = subset(circular_df, name == "p1"), aes(xmin = index, xmax = (index+0.98), 
+                                                                    ymin = -9.5+2.5, ymax = -7.5+2.5, fill = value), 
+                color = alpha("#8B005B", 0), 
+                size = 0.00) +
+      geom_rect(data = subset(circular_df, name == "wt"), aes(xmin = index, xmax = (index+0.98), 
+                                                                   ymin = -11.5+2.5, ymax = -9.5+2.5, fill = value), 
+                color = alpha("#007D75", 0),
+                size = 0.00) +
+    
+      # adding white line between exp and sim
+      #geom_rect(data = subset(circular_df, name == "line"), aes(xmin = index, xmax = (index+0.98), 
+      #                                                             ymin = -12+2.5, ymax = -11.5+2.5, fill = value), 
+      #          alpha = 0.00, 
+      #          color = alpha("white", 0),
+      #          size = 0.00) +
+    
+      # Simulated (ASF519) heatmaps 
+      geom_rect(data = subset(circular_df, name == "mean_p1_sim"), aes(xmin = index, xmax = (index+0.98), 
+                                                              ymin = -14+2.5, ymax = -12+2.5, fill = value), 
+                color = alpha("#FF80E0", 0),
+                size = 0.00) +
+
+      geom_rect(data = subset(circular_df, name == "mean_wt_sim"), aes(xmin = index, xmax = (index+0.98), 
+                                                              ymin = -16+2.5, ymax = -14+2.5, fill = value), 
+                color = alpha("#66FFFF", 0),
+                size = 0.00) +
+      # adding white line between p1 and p1_sim groups
+      geom_rect(data = subset(circular_df, name == "line"), aes(xmin = index, xmax = (index+0.98), 
+                                                              ymin = -19+2.5, ymax = -16+2.5, fill = value), 
+                color = alpha("white", 0),
+                size = 0.00) +
+      geom_rect(data = subset(circular_df, name == "start_position"), aes(xmin = index, xmax = (index+0.98), 
+                                                                          ymin = -30, ymax = -19+2.5),
+                alpha = 0,
+                color = "white",
+                size = 0.00) +
+      scale_fill_gradientn(colors = c("darkblue", "white", "darkred"))+
+      geom_text(aes(x = index+0.49, y = -11.85+2.5, label = pval_sig, angle = angle),color="black", size = 0.2, alpha=0.3, family = "Times",fontface = "bold", hjust = 0) +
+    
+    
+      #geom_text(x=0, y=0.5+2.5, label="log2fold Change", size = 2) +
+      #geom_text(x=0, y=-0.5+2.5, label="(p.adj < 0.05)", size = 2) +
+      #geom_text(x=0, y=-8.5+2.5, label="P1: EV", size = 2) +
+      #geom_text(x=0, y=-10.5+2.5, label="WT: EV", size = 2) +
+      #geom_text(x=0, y=-13+2.5, label="mean(p1_sim): ASF519", size = 2) +
+      #geom_text(x=0, y=-15+2.5, label="mean(wt_sim): ASF519", size = 2) +
+    
+      # Adding Log2fold change plot
+      #geom_rect(data = circular_df, 
+      #       aes(xmin = index, 
+      #           xmax = index + 0.98, 
+      #           ymin = 0, 
+      #           ymax = log2FoldChange*2)) +
+      theme_minimal() +
+      egg::theme_article() +
+      theme(axis.text.y = element_blank(),  # Remove y-axis text
+            axis.ticks.y = element_blank(),  # Remove y-axis ticks
+            axis.text.x = element_blank(),  # Remove x-axis text'
+            axis.ticks.x = element_blank()) +  # Remove x-axis ticks
+
+      # Make plot circular
+      coord_polar() +
+        
+      # Add labels
+      labs(fill = legend_lab,
+           title="Heatmap: log2(GeTMM) ordered by Genomic Location", 
+           x=" ", y=" ", tag = " ") +
+      # labeling the gene order within genome
+      scale_x_continuous(breaks = seq(-250, 4700, 250))
+    # Save plot using cairo
+    if(save == TRUE){
+    ggsave(plot_gg, file=imgname, width=width, height=height, bg = "transparent", device=cairo_pdf())
+    plot_gg
+    dev.off()
+    }
+    if(save == FALSE){
+    plot_gg 
+    }
+  }
+
+  circular_genome_lfc_COG <- function(circular_df, imgname, width, height, save, legend_lab) {
+    circular_df$COG_category <- as.factor(circular_df$COG_category)
+
+    plot_gg <- 
+      circular_df %>% 
+      ggplot() +
+    
+      # Experimental (EV) heatmaps
+      geom_rect(data = subset(circular_df, name == "p1"), aes(xmin = index, xmax = (index+0.98), 
+                                                                  ymin = -9.5+2.5, ymax = -7.5+2.5),
+              alpha = 0.00, 
+              color = alpha("white", 0),
+              size = 0.00) +
+      geom_rect(data = subset(circular_df, name == "wt"), aes(xmin = index, xmax = (index+0.98), 
+                                                                 ymin = -11.5+2.5, ymax = -9.5+2.5),
+              alpha = 0.00, 
+              color = alpha("white", 0),
+              size = 0.00) +
+    
+      # adding white line between exp and sim
+      geom_rect(data = subset(circular_df, name == "line"), aes(xmin = index, xmax = (index+0.98), 
+                                                                 ymin = -12+2.5, ymax = -11.5+2.5),
+              alpha = 0.00, 
+              color = alpha("white", 0),
+              size = 0.00) +
+    
+      # Simulated (ASF519) heatmaps 
+      geom_rect(data = subset(circular_df, name == "mean_p1_sim"), aes(xmin = index, xmax = (index+0.98), 
+                                                            ymin = -14+2.5, ymax = -12+2.5),
+              alpha = 0.00, 
+              color = alpha("white", 0),
+              size = 0.00) +
+
+      geom_rect(data = subset(circular_df, name == "mean_wt_sim"), aes(xmin = index, xmax = (index+0.98), 
+                                                            ymin = -16+2.5, ymax = -14+2.5),
+              alpha = 0.00, 
+              color = alpha("white", 0),
+              size = 0.00) +
+      # adding white line between p1 and p1_sim groups
+      geom_rect(data = subset(circular_df, name == "line"), aes(xmin = index, xmax = (index+0.98), 
+                                                            ymin = -19+2.5, ymax = -16+2.5),
+              color = alpha("white", 0),
+              size = 0.00) +
+      geom_rect(data = subset(circular_df, name == "start_position"), aes(xmin = index, xmax = (index+0.98), 
+                                                                        ymin = -30, ymax = -19+2.5),
+              alpha = 0,
+              color = "white",
+              size = 0.00) +
+      geom_text(aes(x = index+0.49, y = -11.85+2.5, label = pval_sig, angle = angle),color="black", size = 0.2, alpha=0.3, family = "Times",fontface = "bold", hjust = 0) +
+    
+      geom_text(x=0, y=0.5, label="log2fold Change", size = 2) +
+    
+      # Adding Log2fold change plot
+      geom_rect(data = circular_df, 
+           aes(xmin = index, 
+               xmax = index + 0.98, 
+               ymin = 0, 
+               ymax = log2FoldChange*2,
+               fill = COG_category)) +
+      scale_fill_manual(values = COG_colors_multiple_cat) +
+    
+      theme_minimal() +
+      egg::theme_article() +
+      theme(axis.text.y = element_blank(),  # Remove y-axis text
+            axis.ticks.y = element_blank(),  # Remove y-axis ticks
+            axis.text.x = element_blank(),  # Remove x-axis text'
+            axis.ticks.x = element_blank()) +  # Remove x-axis ticks
+          
+      # Make plot circular
+      coord_polar() +
+      
+      # Add labels
+      labs(fill = legend_lab,
+           title="Heatmap: log2(GeTMM) ordered by Genomic Location", 
+           x=" ", y=" ", tag = " ") +
+      # labeling the gene order within genome
+      scale_x_continuous(breaks = seq(-250, 4700, 250))
+    # Save plot using cairo
+    if(save == TRUE){
+    ggsave(plot_gg, file=imgname, width=width, height=height, bg = "transparent", device=cairo_pdf())
+    plot_gg
+    dev.off()
+    }
+    if(save == FALSE){
+    plot_gg 
+    }
+  }
+
+  if (COG) {
+    circular_genome_lfc_COG(circular_df, imgname, width, height, save, legend_lab)
+  } else {
+    circular_genome_lfc(circular_df, imgname, width, height, save, legend_lab)
+  }
+}
+
+# Usage:
+#circular_genome_plot_function_v3(df = log2getmm_deseq_full, includegroup = c("p1","wt","line","mean_p1_sim", "mean_wt_sim"), radius = 50, imgname = "/path/to/save/image.pdf", width = 9, height = 9, save = FALSE, legend_lab = "log2(GeTMM)", COG = TRUE)
+#circular_genome_plot_function_v3(df = log2getmm_deseq_full, includegroup = c("p1","wt","line","mean_p1_sim", "mean_wt_sim"), radius = 50, imgname = "/path/to/save/image.pdf", width = 9, height = 9, save = FALSE, legend_lab = "log2(GeTMM)", COG = FALSE)
+
+circular_genome_plot_function_v3(df = log2getmm_deseq_full, includegroup = c("p1","wt","line","mean_p1_sim", "mean_wt_sim"), radius = 50, imgname = "./Output_figures_n_plots/fig4_Circular_heatmap_COG.pdf", width = 9, height = 9, save = TRUE, legend_lab = "log2(GeTMM)", COG = TRUE)
+circular_genome_plot_function_v3(df = log2getmm_deseq_full, includegroup = c("p1","wt","line","mean_p1_sim", "mean_wt_sim"), radius = 50, imgname = "./Output_figures_n_plots/fig4_Circular_heatmap_noCOG.pdf", width = 9, height = 9, save = TRUE, legend_lab = "log2(GeTMM)", COG = FALSE)
+
+circular_genome_plot_function_v3(df = log2getmm_deseq_full, includegroup = c("p1","wt","line","mean_p1_sim", "mean_wt_sim"), radius = 50, imgname = "./Output_figures_n_plots/fig4_Circular_heatmap_COG.png", width = 9, height = 9, save = TRUE, legend_lab = "log2(GeTMM)", COG = TRUE)
+circular_genome_plot_function_v3(df = log2getmm_deseq_full, includegroup = c("p1","wt","line","mean_p1_sim", "mean_wt_sim"), radius = 50, imgname = "./Output_figures_n_plots/fig4_Circular_heatmap_noCOG.png", width = 9, height = 9, save = TRUE, legend_lab = "log2(GeTMM)", COG = FALSE)
+
+circular_genome_plot_function_v3(df = log2getmm_deseq_full, includegroup = c("p1","wt","line","mean_p1_sim", "mean_wt_sim"), radius = 50, imgname = "./Output_figures_n_plots/fig4_Circular_heatmap_COG.svg", width = 9, height = 9, save = TRUE, legend_lab = "log2(GeTMM)", COG = TRUE)
+circular_genome_plot_function_v3(df = log2getmm_deseq_full, includegroup = c("p1","wt","line","mean_p1_sim", "mean_wt_sim"), radius = 50, imgname = "./Output_figures_n_plots/fig4_Circular_heatmap_noCOG.svg", width = 9, height = 9, save = TRUE, legend_lab = "log2(GeTMM)", COG = FALSE)
+
+```
+
+
+```{r operon}
+
+# Read the operon_mapper data (TSV)
+operon_data <- read.delim(mapped_operon_path, header = TRUE, stringsAsFactors = FALSE, check.names = FALSE)
+
+# Fill down the Operon numbers for each gene
+operon_data$Operon <- zoo::na.locf(operon_data$Operon)
+
+# Filter out rows without position data and select relevant columns
+operon_data <- operon_data %>%
+  filter(!is.na(PosLeft)) %>%
+  select(PosLeft, postRight, Strand, Operon) %>% 
+  rename("PosLeft" = "start",
+         "postRight" = "end", 
+         "Strand" = "strand", 
+         "Operon" = "operon")
+
+# Add operon_unit column
+operon_data_full <- operon_data %>%
+  group_by(operon) %>%
+  mutate(operon_unit = ifelse(n() > 1, cur_group_id(), NA)) %>%
+  ungroup() %>%
+  mutate(operon_unit = ifelse(is.na(operon_unit), NA, 
+                              paste0("unit_", match(operon, unique(operon[!is.na(operon_unit)]))))) 
+# %>% 
+  # rename("PosLeft" = "start",
+  #        "postRight" = "end", 
+  #        "Strand" = "strand", 
+  #        "Operon" = "operon")
+
+# Print the updated dataframe
+print(operon_data_full)
+
+cat("We find ", length(unique(operon_data_full$operon_unit))," operon units")
+```
+
+```{r}
+# Function to combine Preferred_name and PFAMs
+combine_preferred_pfam <- function(preferred, pfams) {
+  if (is.na(preferred)) {
+    return(as.character(pfams))
+  } else {
+    return(paste0("[", preferred, "]  ", pfams))
+  }
+}
+
+operon_lfc <- log2getmm_deseq_full %>% left_join(
+  operon_data %>% 
+    select(-c(strand)),
+    by="start"
+  ) %>%  
+  # counting operon units (that is more than one gene assigned the same operon number)
+  group_by(operon) %>%
+  mutate(operon_unit = ifelse(n() > 1, cur_group_id(), NA)) %>%
+  ungroup() %>%
+  mutate(operon_unit = ifelse(is.na(operon_unit), NA, 
+                              paste0("unit_", match(operon, unique(operon[!is.na(operon_unit)]))))) %>% 
+  select(log2FoldChange, operon_unit, start, end.x, gene_length, strand, padj, COG_category, Preferred_name, PFAMs) %>%
+  
+  # cleaning COG category for visualization
+    mutate(COG_category = replace_na(COG_category, "S")) %>% 
+    mutate(
+      COG_category = 
+        ifelse(
+          nchar(COG_category) > 1, 
+          "Joint COG", 
+          COG_category
+        )) %>%
+  #To visualize only genes with adj.pvalue < 0.05
+    # mutate(
+    #   log2FoldChange = 
+    #     ifelse(
+    #       padj > 0.05, 0,
+    #       log2FoldChange
+    #     )) %>%
+  
+  # approximate lfc >2 as 2
+    mutate(
+      log2FoldChange =
+        ifelse(
+            log2FoldChange < -2, 
+            -2, 
+            ifelse(
+              log2FoldChange > 2, 
+              2, 
+              log2FoldChange
+            ))) %>%
+    mutate(
+      pval_sig = 
+        ifelse(
+          padj < 0.05, "*",
+          NA
+        )) %>%
+    mutate(
+      pval_sig = 
+        ifelse(
+          padj < 0.01, "**",
+          pval_sig
+        )) %>%
+    mutate(
+      pval_sig = 
+        ifelse(
+          padj < 0.001, "***",
+          pval_sig
+        )) %>% 
+  # adding relative gene position
+  tibble::rownames_to_column() %>% 
+  rename("end.x" = "end",
+         "rowname" = "rel_pos")
+
+# relative gene position as numeric, then making it start from 0 (zero-indexing)
+operon_lfc$rel_pos <- as.numeric(operon_lfc$rel_pos)
+operon_lfc <- operon_lfc %>% 
+  mutate(rel_pos = rel_pos-1)
+
+# COGs as factor
+operon_lfc$COG_category <- as.factor(operon_lfc$COG_category)
+
+# combining known gene name (Preferred_name) with PFAMs annotation
+operon_lfc <- operon_lfc %>%
+  mutate(gene_pfam = mapply(combine_preferred_pfam, Preferred_name, PFAMs)) %>%
+  mutate(gene_pfam = str_replace_all(gene_pfam, ",", ", ")) %>%
+  mutate(gene_name = Preferred_name) %>% 
+  mutate(gene_name = str_c("- ", gene_name)) %>% 
+  mutate(gene_pfam = str_c("- ", gene_pfam)) %>% 
+  select(-c(start, end, gene_length, strand, Preferred_name, PFAMs))
+
+
+DT::datatable(operon_lfc)
+```
+
+
+```{r}
+operon_lfc_df <- operon_lfc
+
+# Show the first 40 rows
+print(operon_lfc_df, n=40) 
+
+
+COG_Operon_color <- c(
+  "M" = "#890000",
+  "K" = "#CC79A7",
+  "L" = "#673AB7",
+  "H" = "#000079",
+  "E" = "#008080",
+  "G" = "#006000",
+  "C" = "#76FF03", 
+  "T" = "#FFEB3B",
+  "P" = "#FF7000",
+  "U" = "#F15C80",
+  "J" = "#9C27B0", 
+  "I" = "#03A9F4", 
+  "V" = "#657D9B",
+  "O" = "#C5FA30",
+  "F" = "#FFB000",
+  "D" = "#D8BFD8", 
+  "Q" = "#795548",
+  "S" = "#9E9E9E",
+  "Joint COG" = "#ECECEC",
+  "Operon_A" = "#d55e00",
+  "Operon_B" = "#1f449c"
+  )
+
+# Function to assign colors to operon_unit
+assign_operon_colors <- function(operon_unit) {
+  unique_units <- na.omit(unique(operon_unit))
+  unit_colors <- c("Operon_A", "Operon_B")
+  colors <- rep(unit_colors, length.out = length(unique_units))
+  names(colors) <- unique_units
+  return(colors[operon_unit])
+}
+
+# Pre-process the data
+operon_lfc_df$ymin_operon <- ifelse(is.na(operon_lfc_df$operon_unit), 0, -2.1)
+operon_lfc_df$ymax_operon <- ifelse(is.na(operon_lfc_df$operon_unit), 0, 2.1)
+
+# Add operon_color column to operon_lfc_df
+operon_lfc_df$operon_color <- ifelse(is.na(operon_lfc_df$operon_unit), NA, assign_operon_colors(operon_lfc_df$operon_unit))
+
+# Verify that the operon_color column has been added correctly
+print(head(operon_lfc_df))
+
+# Now create the plot with a large width
+operon_plot <- ggplot(operon_lfc_df) +
+  geom_rect(aes(xmin = rel_pos + 0.2, xmax = rel_pos + 0.8, ymin = 0, ymax = log2FoldChange, fill = COG_category)) +
+  scale_fill_manual(values = COG_Operon_color) +  # This will apply colors to the COG_category
+  #operon wrapper shades
+  geom_rect(data = operon_lfc_df, 
+            aes(xmin = rel_pos, xmax = rel_pos + 1, ymin = ymin_operon, ymax = ymax_operon, fill = operon_color), 
+            alpha = 0.1, color = NA) +  # Fill with operon_color, no border
+  #p-value significance asterisk annotation
+  geom_text(aes(x = rel_pos+0.8, y = 2.1, label = pval_sig),
+            color="black", size = 0.6, 
+            family = "Helvetica",fontface="bold", hjust = 0, angle=90) +
+  #
+  geom_text(aes(x = rel_pos+0.35, y = -2.1, label = gene_name),
+            color="black", size = 0.35, 
+            family = "Helvetica",fontface="italic", hjust = 0, angle=-90) +
+  # For setting the dimension of the entire plot
+  geom_rect(data = operon_lfc_df, 
+            aes(xmin = 0, xmax = 4338, ymin = -2.8, ymax = 2.4, fill = "white"),
+            alpha=0) + 
+  theme_minimal() +
+  theme_void()
+  labs(x = "Relative Gene Position", y = "log2 Fold Change", fill = "Category")+
+  egg::theme_article()
+  
+
+operon_plot_pfam <- ggplot(operon_lfc_df) +
+  geom_rect(aes(xmin = rel_pos + 0.2, xmax = rel_pos + 0.8, ymin = 0, ymax = log2FoldChange, fill = COG_category)) +
+  scale_fill_manual(values = COG_Operon_color) +  # This will apply colors to the COG_category
+  #operon wrapper shades
+  geom_rect(data = operon_lfc_df, 
+            aes(xmin = rel_pos, xmax = rel_pos + 1, ymin = ymin_operon, ymax = ymax_operon, fill = operon_color), 
+            alpha = 0.1, color = NA) +  # Fill with operon_color, no border
+  #p-value significance asterisk annotation
+  geom_text(aes(x = rel_pos+0.8, y = 2.1, label = pval_sig),
+            color="black", size = 0.6, 
+            family = "Helvetica",fontface="bold", hjust = 0, angle=90) +
+  #
+  geom_text(aes(x = rel_pos+0.35, y = -2.1, label = gene_pfam),
+            color="black", size = 0.35, 
+            family = "Helvetica",fontface="italic", hjust = 0, angle=-90) +
+  # For setting the dimension of the entire plot
+  geom_rect(data = operon_lfc_df, 
+            aes(xmin = 0, xmax = 4338, ymin = -18.5, ymax = 2.3, fill = "white"),
+            alpha=0) + 
+  theme_minimal() +
+  theme_void()
+  labs(x = "Relative Gene Position", y = "log2 Fold Change", fill = "Category")+
+  egg::theme_article()
+
+
+
+operon_plot
+
+# Saving the plot as an image with a large width (e.g., 2000 pixels)
+ggsave("./Output_figures_n_plots/fig5_operon_wide_plot.svg", plot = operon_plot, width = 80, height = 0.3, dpi = 300, limitsize = FALSE)
+ggsave("./Output_figures_n_plots/fig5_operon_pfam_wide_plot.svg", plot = operon_plot_pfam, width = 80, height = 1, dpi = 300, limitsize = FALSE)
+
+```
+
+
+```{r}
+cat("
+<div style='overflow-x: scroll; width: 100%;'>
+  <object type='image/svg+xml' data='wide_plot.svg' width='3000' height='600'></object>
+</div>
+")
+```
+
+```{r}
+# Define the number of segments and calculate the width of each segment
+n_segments <- 39
+segment_width <- 150
+
+# Create a sequence of breaks that are multiples of 50 for the entire range
+total_breaks <- seq(0, 4350, by = 50)
+
+# Loop over each segment to create and save individual plots
+for (i in 1:n_segments) {
+  # Define the start and end positions for the current segment
+  start_pos <- (i - 1) * segment_width
+  end_pos <- i * segment_width - 1  # -1 to avoid overlap
+  
+  # Filter the data for the current segment
+  segment_df <- operon_lfc_df %>%
+    filter(rel_pos >= start_pos & rel_pos < end_pos)
+  
+  # Find breaks that fall within the segment's range
+  segment_breaks <- total_breaks[total_breaks >= start_pos & total_breaks <= end_pos]
+  
+  # Create the plot for the current segment without the legend
+  segment_plot <- ggplot(segment_df) +
+    geom_rect(aes(xmin = rel_pos + 0.2, xmax = rel_pos + 0.8, ymin = 0, ymax = log2FoldChange, fill = COG_category)) +
+    scale_fill_manual(values = COG_Operon_color, guide = FALSE) +
+    geom_rect(data = segment_df, 
+              aes(xmin = rel_pos, xmax = rel_pos + 1, ymin = ymin_operon, ymax = ymax_operon, fill = operon_color), 
+              alpha = 0.1, color = NA) +
+    geom_text(aes(x = rel_pos + 0.8, y = 2.1, label = pval_sig),
+              color = "black", size = 2.3, 
+              family = "Helvetica", fontface = "bold", hjust = 0, angle = 90) +
+    geom_text(aes(x = rel_pos + 0.35, y = -2.1, label = gene_name),
+              color = "black", size = 1.4, 
+              family = "Helvetica", fontface = "italic", hjust = 0, angle = -90) +
+    geom_rect(data = segment_df, 
+              aes(xmin = 0, xmax = 4338, ymin = -4.7, ymax = 3.3, fill = "white"),
+              alpha = 0) +
+    theme_minimal() +
+  # theme(
+  #   legend.position = "none",
+  #   axis.text.x = element_text(size = 1), # Set size for x-axis text
+  #   axis.text.y = element_text(size = 8), # Set size for y-axis text
+  #   axis.title.x = element_text(size = 10), # Set size for x-axis title
+  #   axis.title.y = element_text(size = 10)  # Set size for y-axis title
+  # ) +
+    labs(x = "Relative Gene Position", y = "log2 Fold Change") +
+    egg::theme_article( base_size = 6) +
+    # coord_fixed(ratio = 1/5) +
+    scale_x_continuous(
+      limits = c(start_pos, end_pos),
+      breaks = segment_breaks  # Use the breaks that are within the segment's range
+    )
+  
+  # Save the plot for the current segment
+  file_name <- sprintf("./Output_figures_n_plots/fig5.1_operon_segment_%02d.svg", i)
+  ggsave(file_name, plot = segment_plot, width = 7.5, height = 1.2, dpi = 300)
+}
+```
+
+
+
+
+
