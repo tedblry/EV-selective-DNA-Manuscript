@@ -15,25 +15,23 @@ For other sections of the pipeline, please refer to the descriptions below:
 ## Other sections of the Pipeline
 Each component of our study is modularized into separate pipelines, detailed below:
 
+
 ### ONT Long-Reads Simulation
 - **NanoEx-Gen**: A tool for simulating Oxford Nanopore Technologies (ONT) long-reads.
-  - ![GitHub logo](https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png) [NanoEx-Gen Repository](https://github.com/tedblry/NanoEx-Gen)
+  - <img src="https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png" width="16" height="16"> [NanoEx-Gen Repository](https://github.com/tedblry/NanoEx-Gen)
 
 ### Read Alignment and Counting
 - **MappCountFlow**: Designed for precise alignment and counting of sequencing reads.
-  - ![GitHub logo](https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png) [MappCountFlow Repository](https://github.com/tedblry/MappCountFlow)
+  - <img src="https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png" width="16" height="16"> [MappCountFlow Repository](https://github.com/tedblry/MappCountFlow)
 
 ### Genome Assembly and Polishing
 - **DeNanoPolish**: A pipeline for assembling and polishing genomic sequences.
-  - ![GitHub logo](https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png) [DeNanoPolish Repository](https://github.com/tedblry/DeNanoPolish)
+  - <img src="https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png" width="16" height="16"> [DeNanoPolish Repository](https://github.com/tedblry/DeNanoPolish)
 
 ### Contig Alignment and Sorting
 - **DenovoContigSort**: A tool for efficient alignment and sorting of genomic contigs.
-  - ![GitHub logo](https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png) [DenovoContigSort Repository](https://github.com/tedblry/DenovoContigSort)
+  - <img src="https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png" width="16" height="16"> [DenovoContigSort Repository](https://github.com/tedblry/DenovoContigSort)
 
-### Core Code of the Study
-- **EV-selective-DNA-Manuscript**: Contains the central code integral to our study.
-  - ![GitHub logo](https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png) [EV-selective-DNA Manuscript Repository](https://github.com/tedblry/EV-selective-DNA-Manuscript)
 
 ## Open Source Commitment
 In line with our commitment to open-source principles, all codes and software developed for this research are available on GitHub. We encourage contributions, suggestions, and feedback.
